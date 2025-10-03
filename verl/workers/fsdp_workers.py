@@ -640,7 +640,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         log_gpu_memory_usage("After load_fsdp_model_to_gpu", logger=logger)
 
         peft_config = None
-        peft_model = getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
 
         # if not self._model_watched:
         #     print("fit() - calling wandb.watch on actor module")
@@ -650,84 +649,66 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         #     print("fit() - not calling wandb.watch on actor module")
 
 
-        # if hasattr(peft_model, "peft_config"):  # LoRA
-        #     peft_config = peft_model.peft_config.get("default", None)
-        #     params = collect_lora_params(
-        #         module=self.actor_module_fsdp,
-        #         layered_summon=self.config.rollout.get("layered_summon", False),
-        #         base_sync_done=self.base_sync_done,
-        #     )
-        #     if not self.base_sync_done:
-        #         params = {replace_lora_wrapper(k, peft_config): v for k, v in params.items()}
-        # else:
-        #     params = self.actor_module_fsdp.state_dict()
+        def collect_lora_params_summoned(module: torch.nn.Module):
+            from collections import OrderedDict
+            lora_params = OrderedDict()
+            model = peft_model.base_model.model
+            orig_dev = "cpu" if "cpu" in str(next(model.parameters()).device) else get_device_name()
+            model = model.to("cpu")
+            for name, param in model.state_dict().items():
+                if any(x in name for x in ["_flat_param", "lora_"]):
+                    continue
+                name = name.replace("_fsdp_wrapped_module.", "").replace(".base_layer", "")
+                lora_params[name] = (
+                    param.full_tensor().detach().cpu()
+                    if hasattr(param, "full_tensor")
+                    else param.detach().cpu()
+                )
+            model = model.to(orig_dev)
+            get_torch_device().empty_cache()
+            return lora_params
+
         merged_adapter = False
-        if hasattr(peft_model, "peft_config"):  # LoRA
-            peft_config = peft_model.peft_config.get("default", None)
-            # Merge the adapter so state_dict() reflects full (base+LoRA) weights.
-            # From here on, treat as a plain full-weight update into vLLM:
-            with FSDP.summon_full_params(self.actor_module_fsdp, writeback=False), torch.no_grad():
-                peft_model.merge_adapter(safe_merge=False)
+        
+        # Merge the adapter so state_dict() reflects full (base+LoRA) weights.
+        # From here on, treat as a plain full-weight update into vLLM.
+        # We set writeback=False so that the merge is "undone" at the end.
+        with FSDP.summon_full_params(self.actor_module_fsdp, writeback=False):
+            peft_model = getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
+            with torch.no_grad():
+                peft_model.merge_adapter(safe_merge=True)
             print("[rollout_mode] merge_adapter")
-            merged_adapter = True
-            peft_config = None
-            # With adapter merged, just take the full model state_dict.
-            # After merge_adapter(), the LoRA weights are merged into base model weights,
-            # so we should use state_dict() directly instead of collect_lora_params()
-            # which filters out LoRA parameters.
-            params = self.actor_module_fsdp.state_dict()
-        else:
-            params = self.actor_module_fsdp.state_dict()
+            params = collect_lora_params_summoned(module=self.actor_module_fsdp)
+            params = convert_weight_keys(
+                params, getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
+            )
 
-        params = convert_weight_keys(
-            params, getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
-        )
+            log_gpu_memory_usage("Before offload_fsdp_model_to_cpu", logger=logger)
+            if self._is_offload_param:
+                offload_fsdp_model_to_cpu(self.actor_module_fsdp)
+            log_gpu_memory_usage("After offload_fsdp_model_to_cpu", logger=logger)
 
-        # Special handling for LoRA with sleep_level=2:
-        # When sleep_level=2, base model weights are destroyed during each sleep cycle.
-        # separately collect and update LoRA weights and base model weights through their respective interfaces.
-        # Here: params contains LoRA weights, base_model_params contains base model weights.
-        # (Skipped when we've merged the adapter, since peft_config == None.)
-        # if peft_config is not None and getattr(self.rollout, "sleep_level", None) == 2:
-        #     base_model_params = collect_lora_params(
-        #         module=self.actor_module_fsdp,
-        #         layered_summon=self.layered_summon,
-        #         base_sync_done=False,
-        #     )
-        #     base_model_params = {replace_lora_wrapper(k, peft_config): v for k, v in base_model_params.items()}
-        #     base_model_params = convert_weight_keys(
-        #         base_model_params, getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
-        #     )
+            set_expandable_segments(False)
 
-        log_gpu_memory_usage("Before offload_fsdp_model_to_cpu", logger=logger)
-        if self._is_offload_param:
-            offload_fsdp_model_to_cpu(self.actor_module_fsdp)
-        log_gpu_memory_usage("After offload_fsdp_model_to_cpu", logger=logger)
-
-        set_expandable_segments(False)
-
-        device = get_device_id()  # used when fsdp2 set cpu_offload_policy
-        per_tensor_param = (
-            (name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param)
-            for name, param in params.items()
-        )
+            device = get_device_id()  # used when fsdp2 set cpu_offload_policy
+            per_tensor_param = (
+                (name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param)
+                for name, param in params.items()
+            )
 
 
-        if self.config.rollout.free_cache_engine:
-            await self.rollout.resume(tags=["weights"])
-        log_gpu_memory_usage("After resume weights", logger=logger)
+            if self.config.rollout.free_cache_engine:
+                await self.rollout.resume(tags=["weights"])
+            log_gpu_memory_usage("After resume weights", logger=logger)
 
-        await self.rollout.update_weights(
-            per_tensor_param, 
-            peft_config=peft_config,   # None when merged -> vLLM receives full weights
-            base_sync_done=self.base_sync_done
-        )
+            await self.rollout.update_weights(
+                per_tensor_param, 
+                peft_config=peft_config,   # None when merged -> vLLM receives full weights
+                base_sync_done=self.base_sync_done
+            )
+            peft_model.unmerge_adapter()
         log_gpu_memory_usage("After update_weights", logger=logger)
         del params, per_tensor_param
-        if merged_adapter:
-            with FSDP.summon_full_params(self.actor_module_fsdp, writeback=False), torch.no_grad():
-                peft_model.unmerge_adapter()
-        print("[rollout_mode] unmerge_adapter")
         aggressive_empty_cache(force_sync=True)
         if self.config.rollout.free_cache_engine:
             await self.rollout.resume(tags=["kv_cache"])

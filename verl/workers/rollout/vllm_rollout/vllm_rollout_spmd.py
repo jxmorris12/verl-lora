@@ -340,7 +340,7 @@ class vLLMRollout(BaseRollout):
             outputs = self.inference_engine.generate(
                 prompts=vllm_inputs,  # because we have already convert it to prompt token id
                 sampling_params=self.sampling_params,
-                lora_request=lora_requests,
+                # lora_request=lora_requests,
                 use_tqdm=False,
             )
 
@@ -434,35 +434,14 @@ class vLLMRollout(BaseRollout):
             weights: A generator that yields the name of the weight tensor and the tensor itself.
         """
         print(f"updating weights")
-        peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
-        if peft_config and base_sync_done:
-            lora_int_id = int(time.time_ns() % 0x7FFFFFFF)
-            # lora_reqest = TensorLoRARequest(
-            #     lora_name=f"{lora_int_id}",
-            #     lora_int_id=lora_int_id,
-            #     lora_path="simon_lora_path",
-            #     peft_config=asdict(peft_config),
-            #     lora_tensors=weights,
-            # )
-            print(f"not sending LoRA request at {lora_int_id}")
-            # self.inference_engine.llm_engine.add_lora(lora_reqest)
-            # logger.info(f"vLLM load weights, loaded_params: {len(weights)}")
+        from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 
-            # try patching merged model
-            from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
-            model = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
-            patch_vllm_moe_model_weight_loader(model)
-            model.load_weights(weights)
-        else:
-            from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
-
-            model = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
-            patch_vllm_moe_model_weight_loader(model)
-            try:
-                model.load_weights(weights)
-            except Exception as e:
-                print(model.state_dict().keys())
-                raise e
+        weights = list(weights)
+        print("weight norms:", [(k, v.norm(p=2).item()) for k,v in list(weights)[:3]])
+        model = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
+        patch_vllm_moe_model_weight_loader(model)
+        weights = list(weights)
+        model.load_weights(weights)
 
 
 # https://github.com/vllm-project/vllm/issues/13175
@@ -558,8 +537,8 @@ class vLLMAsyncRollout(BaseRollout):
             else int(ray.get_runtime_context().get_accelerator_ids()[device_name][0])
         )
         self.vllm_config = all_kwargs[0]["vllm_config"]
-        if self.lora_config:
-            self.vllm_config.lora_config = LoRAConfig(**self.lora_config)
+        # if self.lora_config:
+        #     self.vllm_config.lora_config = LoRAConfig(**self.lora_config)
         self.inference_engine = WorkerWrapperBase(vllm_config=self.vllm_config)
         self.inference_engine.init_worker(all_kwargs)
 
@@ -597,24 +576,24 @@ class vLLMAsyncRollout(BaseRollout):
         Args:
             weights: A generator that yields the name of the weight tensor and the tensor itself.
         """
-        peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
-        if peft_config and base_sync_done:
-            lora_int_id = int(time.time_ns() % 0x7FFFFFFF)
-            lora_reqest = TensorLoRARequest(
-                lora_name=f"{lora_int_id}",
-                lora_int_id=lora_int_id,
-                lora_path="simon_lora_path",
-                peft_config=asdict(peft_config),
-                lora_tensors=weights,
-            )
-            self.inference_engine.worker.add_lora(lora_reqest)
-            logger.info(f"vLLM load weights, loaded_params: {len(weights)}")
-        else:
-            from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
+        # peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
+        # if peft_config and base_sync_done:
+        #     lora_int_id = int(time.time_ns() % 0x7FFFFFFF)
+        #     lora_reqest = TensorLoRARequest(
+        #         lora_name=f"{lora_int_id}",
+        #         lora_int_id=lora_int_id,
+        #         lora_path="simon_lora_path",
+        #         peft_config=asdict(peft_config),
+        #         lora_tensors=weights,
+        #     )
+        #     self.inference_engine.worker.add_lora(lora_reqest)
+        #     logger.info(f"vLLM load weights, loaded_params: {len(weights)}")
+        # else:
+        from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 
-            model = self.inference_engine.worker.model_runner.model
-            patch_vllm_moe_model_weight_loader(model)
-            model.load_weights(weights)
+        model = self.inference_engine.worker.model_runner.model
+        patch_vllm_moe_model_weight_loader(model)
+        model.load_weights(weights)
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         """Batch generate sequences in sync mode."""

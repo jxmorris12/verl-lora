@@ -498,6 +498,7 @@ class DataParallelPPOActor(BasePPOActor):
                         if v.grad is not None
                     }
                     append_to_dict(metrics, param_norms)
+                
                 ################ Get gradnorms 
 
                 grad_norm = self._optimizer_step()
