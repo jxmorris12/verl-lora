@@ -80,6 +80,11 @@ class HFModelConfig(BaseConfig):
     target_modules: Optional[str] = "all-linear"
 
     exclude_modules: Optional[str] = None
+    use_lora_xs: bool = False
+    lora_xs_precision: str = "fp32"
+    lora_xs_tie_linear_num: int = 1
+    lora_xs_tie_linear_mode: str = "tile"
+
     use_liger: bool = False
 
     use_fused_kernels: bool = False

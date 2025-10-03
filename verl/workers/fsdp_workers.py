@@ -89,6 +89,7 @@ from verl.utils.py_functional import convert_to_regular_types
 from verl.workers.config import FSDPCriticConfig, FSDPEngineConfig, HFModelConfig, RolloutConfig
 from verl.workers.rollout import get_rollout_class
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
+# from verl.utils.lora_utils import find_and_initialize_lora_xs
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -437,7 +438,28 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     "exclude_modules": convert_to_regular_types(self.config.model.exclude_modules),
                     "bias": "none",
                 }
-                actor_module = get_peft_model(actor_module, LoraConfig(**lora_config))
+                if self.config.model.get("use_lora_xs"):
+                    reconstruction_config = {
+                        "reconstruction_type": "svd",
+                        "reconstr_mode": "separated",
+                        "half_init_dec": False,
+                        "replacement_module_random_init": False,
+                        "r_squared": True,
+                        "precision": self.config.model.lora_xs_precision,
+                        "svd": {
+                            "n_iter": 10,
+                            "random_state": 42,
+                        },
+                        "tie_linear_num": self.config.model.lora_xs_tie_linear_num,
+                        "tie_linear_mode": self.config.model.lora_xs_tie_linear_mode,
+                    }
+                    reconstruction_config["svd"]['rank'] = self.config.model.lora_rank
+                    print("*************** Using LoRA-XS ***************")
+                    find_and_initialize_lora_xs(
+                        actor_module, lora_config=lora_config, adapter_name="lora_xs", reconstr_type="svd",
+                                    reconstruct_config=reconstruction_config)
+                else:
+                    actor_module = get_peft_model(actor_module, LoraConfig(**lora_config))
 
         self.use_orig_params = fsdp_config.get("use_orig_params", False)
         if self.config.actor.get("freeze_vision_tower", False):
@@ -1314,15 +1336,15 @@ class CriticWorker(Worker, DistProfilerExtension):
                 "half_init_dec": False,
                 "replacement_module_random_init": False,
                 "r_squared": True,
-                "precision": args.lora_xs_precision,
+                "precision": self.config.model.lora_xs_precision,
                 "svd": {
                     "n_iter": 10,
                     "random_state": 42,
                 },
-                "tie_linear_num": args.lora_xs_tie_linear_num,
-                "tie_linear_mode": args.lora_xs_tie_linear_mode,
+                "tie_linear_num": self.config.model.lora_xs_tie_linear_num,
+                "tie_linear_mode": self.config.model.lora_xs_tie_linear_mode,
             }
-            reconstruction_config["svd"]['rank'] = args.lora_r
+            reconstruction_config["svd"]['rank'] = self.config.model.lora_r
             print("*************** Using LoRA-XS ***************")
             find_and_initialize(critic_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
                                 reconstruct_config=reconstruction_config)

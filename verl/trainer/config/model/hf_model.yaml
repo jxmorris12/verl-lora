@@ -46,10 +46,22 @@ lora_rank: 0
 lora_alpha: 16
 
 # Target modules for LoRA adaptation
-target_modules: all-linear
+target_modules: "all-linear"
 
 # Exclude modules from LoRA adaptation
 exclude_modules: null
+
+# whether to use LoRA-XS
+use_lora_xs: False
+
+# LoRA-XS precision mode
+lora_xs_precision: "fp32"
+
+# LoRA-XS tie linear number
+lora_xs_tie_linear_num: 1
+
+# LoRA-XS tie linear mode
+lora_xs_tie_linear_mode: "tile"
 
 # whether to use liger. Only valid when we use hf model definition
 use_liger: False

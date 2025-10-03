@@ -167,6 +167,18 @@ actor_rollout_ref:
     # Example: '.*visual.*' for excluding the ViT in Qwen2.5-VL, as currently vllm does not support ViT Lora.
     exclude_modules: null
 
+    # Whether to use LoRA-XS
+    use_lora_xs: false
+
+    # LoRA-XS precision mode
+    lora_xs_precision: "fp32"
+
+    # LoRA-XS tie linear number
+    lora_xs_tie_linear_num: 1
+
+    # LoRA-XS tie linear mode
+    lora_xs_tie_linear_mode: "tile"
+
     # Whether to use Liger for linear layer fusion
     use_liger: false
 
@@ -680,6 +692,18 @@ critic:
 
     # LoRA target modules: "all-linear" or list of linear projection layers
     target_modules: all-linear
+
+    # Whether to use LoRA-XS
+    use_lora_xs: false
+
+    # LoRA-XS precision mode
+    lora_xs_precision: "fp32"
+
+    # LoRA-XS tie linear number
+    lora_xs_tie_linear_num: 1
+
+    # LoRA-XS tie linear mode
+    lora_xs_tie_linear_mode: "tile"
 
   # PPO mini-batch size per update
   ppo_mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
