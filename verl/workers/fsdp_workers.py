@@ -17,6 +17,7 @@ The main entry point to run the PPO algorithm
 
 import asyncio
 import datetime
+import copy
 import json
 import logging
 import os
@@ -630,8 +631,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
     async def rollout_mode(self):
         """Context switch hybridengine to rollout mode."""
+        print("[fsdp_workers] rollout_mode")
         aggressive_empty_cache(force_sync=True)
-
+        
         log_gpu_memory_usage("Before load_fsdp_model_to_gpu", logger=logger)
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
@@ -639,15 +641,41 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         peft_config = None
         peft_model = getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
+
+        # if not self._model_watched:
+        #     print("fit() - calling wandb.watch on actor module")
+        #     import wandb; wandb.watch(peft_model)
+        #     self._model_watched = True
+        # else:
+        #     print("fit() - not calling wandb.watch on actor module")
+
+
+        # if hasattr(peft_model, "peft_config"):  # LoRA
+        #     peft_config = peft_model.peft_config.get("default", None)
+        #     params = collect_lora_params(
+        #         module=self.actor_module_fsdp,
+        #         layered_summon=self.config.rollout.get("layered_summon", False),
+        #         base_sync_done=self.base_sync_done,
+        #     )
+        #     if not self.base_sync_done:
+        #         params = {replace_lora_wrapper(k, peft_config): v for k, v in params.items()}
+        # else:
+        #     params = self.actor_module_fsdp.state_dict()
+        merged_adapter = False
         if hasattr(peft_model, "peft_config"):  # LoRA
             peft_config = peft_model.peft_config.get("default", None)
-            params = collect_lora_params(
-                module=self.actor_module_fsdp,
-                layered_summon=self.config.rollout.get("layered_summon", False),
-                base_sync_done=self.base_sync_done,
-            )
-            if not self.base_sync_done:
-                params = {replace_lora_wrapper(k, peft_config): v for k, v in params.items()}
+            # Merge the adapter so state_dict() reflects full (base+LoRA) weights.
+            # From here on, treat as a plain full-weight update into vLLM:
+            with FSDP.summon_full_params(self.actor_module_fsdp, writeback=False), torch.no_grad():
+                peft_model.merge_adapter(safe_merge=False)
+            print("[rollout_mode] merge_adapter")
+            merged_adapter = True
+            peft_config = None
+            # With adapter merged, just take the full model state_dict.
+            # After merge_adapter(), the LoRA weights are merged into base model weights,
+            # so we should use state_dict() directly instead of collect_lora_params()
+            # which filters out LoRA parameters.
+            params = self.actor_module_fsdp.state_dict()
         else:
             params = self.actor_module_fsdp.state_dict()
 
@@ -659,16 +687,17 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # When sleep_level=2, base model weights are destroyed during each sleep cycle.
         # separately collect and update LoRA weights and base model weights through their respective interfaces.
         # Here: params contains LoRA weights, base_model_params contains base model weights.
-        if peft_config is not None and getattr(self.rollout, "sleep_level", None) == 2:
-            base_model_params = collect_lora_params(
-                module=self.actor_module_fsdp,
-                layered_summon=self.layered_summon,
-                base_sync_done=False,
-            )
-            base_model_params = {replace_lora_wrapper(k, peft_config): v for k, v in base_model_params.items()}
-            base_model_params = convert_weight_keys(
-                base_model_params, getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
-            )
+        # (Skipped when we've merged the adapter, since peft_config == None.)
+        # if peft_config is not None and getattr(self.rollout, "sleep_level", None) == 2:
+        #     base_model_params = collect_lora_params(
+        #         module=self.actor_module_fsdp,
+        #         layered_summon=self.layered_summon,
+        #         base_sync_done=False,
+        #     )
+        #     base_model_params = {replace_lora_wrapper(k, peft_config): v for k, v in base_model_params.items()}
+        #     base_model_params = convert_weight_keys(
+        #         base_model_params, getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
+        #     )
 
         log_gpu_memory_usage("Before offload_fsdp_model_to_cpu", logger=logger)
         if self._is_offload_param:
@@ -677,30 +706,28 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         set_expandable_segments(False)
 
-        if peft_config is not None and self.base_sync_done:
-            per_tensor_param = params
-        else:
-            device = get_device_id()  # used when fsdp2 set cpu_offload_policy
-            per_tensor_param = (
-                (name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param)
-                for name, param in params.items()
-            )
+        device = get_device_id()  # used when fsdp2 set cpu_offload_policy
+        per_tensor_param = (
+            (name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param)
+            for name, param in params.items()
+        )
+
 
         if self.config.rollout.free_cache_engine:
             await self.rollout.resume(tags=["weights"])
         log_gpu_memory_usage("After resume weights", logger=logger)
 
-        if peft_config is not None and getattr(self.rollout, "sleep_level", None) == 2:
-            per_tensor_base_params = (
-                (name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param)
-                for name, param in base_model_params.items()
-            )
-            await self.rollout.update_weights(per_tensor_base_params, base_sync_done=False)
-            del base_model_params, per_tensor_base_params
-
-        await self.rollout.update_weights(per_tensor_param, peft_config=peft_config, base_sync_done=self.base_sync_done)
+        await self.rollout.update_weights(
+            per_tensor_param, 
+            peft_config=peft_config,   # None when merged -> vLLM receives full weights
+            base_sync_done=self.base_sync_done
+        )
         log_gpu_memory_usage("After update_weights", logger=logger)
         del params, per_tensor_param
+        if merged_adapter:
+            with FSDP.summon_full_params(self.actor_module_fsdp, writeback=False), torch.no_grad():
+                peft_model.unmerge_adapter()
+        print("[rollout_mode] unmerge_adapter")
         aggressive_empty_cache(force_sync=True)
         if self.config.rollout.free_cache_engine:
             await self.rollout.resume(tags=["kv_cache"])
@@ -710,6 +737,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # important: need to manually set the random states of each tp to be identical.
         self.torch_random_states = get_torch_device().get_rng_state()
         get_torch_device().set_rng_state(self.gen_random_states)
+        print("[fsdp_workers] rollout_mode done")
 
     async def trainer_mode(self):
         """Context switch hybridengine to trainer mode."""
@@ -785,7 +813,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if self._is_actor:
             actor_cfg = omega_conf_to_dataclass(self.config.actor)
             self.actor = DataParallelPPOActor(
-                config=actor_cfg, actor_module=self.actor_module_fsdp, actor_optimizer=self.actor_optimizer
+                config=actor_cfg, 
+                actor_module=self.actor_module_fsdp, 
+                actor_optimizer=self.actor_optimizer
             )
 
         if self._is_rollout:
@@ -839,6 +869,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_config=checkpoint_contents,
             )
+        # self._model_watched = False
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="red", role="actor_update")
@@ -1061,6 +1092,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def load_checkpoint(self, local_path, hdfs_path=None, del_local_after_load=False):
+        print("*** SUPPOSED TO LOAD CHECKPOINT FROM ***", local_path)
+        return
         assert self._is_actor or (not self._is_actor and self._is_rollout), (
             f"Checkpoint loading is only supported for Actor or standalone Rollout Workers, but got "
             f"{self._is_actor} and {self._is_rollout}"
@@ -1281,6 +1314,25 @@ class CriticWorker(Worker, DistProfilerExtension):
                 "bias": "none",
             }
             critic_module = get_peft_model(critic_module, LoraConfig(**lora_config))
+
+            reconstruction_config = {
+                "reconstruction_type": "svd",
+                "reconstr_mode": "separated",
+                "half_init_dec": False,
+                "replacement_module_random_init": False,
+                "r_squared": True,
+                "precision": args.lora_xs_precision,
+                "svd": {
+                    "n_iter": 10,
+                    "random_state": 42,
+                },
+                "tie_linear_num": args.lora_xs_tie_linear_num,
+                "tie_linear_mode": args.lora_xs_tie_linear_mode,
+            }
+            reconstruction_config["svd"]['rank'] = args.lora_r
+            print("*************** Using LoRA-XS ***************")
+            find_and_initialize(critic_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
+                                reconstruct_config=reconstruction_config)
 
         if self.rank == 0:
             print_model_size(critic_module)

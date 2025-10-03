@@ -107,11 +107,11 @@ class vLLMRollout(BaseRollout):
         tokenizer = model_config.tokenizer
         model_hf_config = model_config.hf_config
         trust_remote_code = model_config.trust_remote_code
-        self.lora_kwargs = (
-            {"enable_lora": True, "max_loras": 1, "max_lora_rank": model_config.lora_rank}
-            if model_config.lora_rank > 0
-            else {}
-        )
+        # self.lora_kwargs = (
+        #     {"enable_lora": True, "max_loras": 1, "max_lora_rank": model_config.lora_rank}
+        #     if model_config.lora_rank > 0
+        #     else {}
+        # )
 
         tensor_parallel_size = self.config.get("tensor_model_parallel_size", 1)
         assert tensor_parallel_size <= torch.distributed.get_world_size(), (
@@ -205,7 +205,7 @@ class vLLMRollout(BaseRollout):
             trust_remote_code=trust_remote_code,
             seed=config.get("seed", 0),
             **compilation_config,
-            **self.lora_kwargs,
+            # **self.lora_kwargs,
             **engine_kwargs,
         )
 
@@ -327,13 +327,13 @@ class vLLMRollout(BaseRollout):
             }
 
         lora_requests = None
-        if self.lora_kwargs:
-            lora_int_ids = list(self.inference_engine.llm_engine.list_loras())
-            if len(lora_int_ids) > 0:
-                lora_int_id = lora_int_ids[0]
-                lora_requests = [
-                    LoRARequest(lora_name=f"{lora_int_id}", lora_int_id=lora_int_id, lora_path="/simon-stub-path")
-                ] * batch_size
+        # if self.lora_kwargs:
+        #     lora_int_ids = list(self.inference_engine.llm_engine.list_loras())
+        #     if len(lora_int_ids) > 0:
+        #         lora_int_id = lora_int_ids[0]
+        #         lora_requests = [
+        #             LoRARequest(lora_name=f"{lora_int_id}", lora_int_id=lora_int_id, lora_path="/simon-stub-path")
+        #         ] * batch_size
 
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
@@ -433,24 +433,36 @@ class vLLMRollout(BaseRollout):
         Args:
             weights: A generator that yields the name of the weight tensor and the tensor itself.
         """
+        print(f"updating weights")
         peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
         if peft_config and base_sync_done:
             lora_int_id = int(time.time_ns() % 0x7FFFFFFF)
-            lora_reqest = TensorLoRARequest(
-                lora_name=f"{lora_int_id}",
-                lora_int_id=lora_int_id,
-                lora_path="simon_lora_path",
-                peft_config=asdict(peft_config),
-                lora_tensors=weights,
-            )
-            self.inference_engine.llm_engine.add_lora(lora_reqest)
-            logger.info(f"vLLM load weights, loaded_params: {len(weights)}")
+            # lora_reqest = TensorLoRARequest(
+            #     lora_name=f"{lora_int_id}",
+            #     lora_int_id=lora_int_id,
+            #     lora_path="simon_lora_path",
+            #     peft_config=asdict(peft_config),
+            #     lora_tensors=weights,
+            # )
+            print(f"not sending LoRA request at {lora_int_id}")
+            # self.inference_engine.llm_engine.add_lora(lora_reqest)
+            # logger.info(f"vLLM load weights, loaded_params: {len(weights)}")
+
+            # try patching merged model
+            from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
+            model = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
+            patch_vllm_moe_model_weight_loader(model)
+            model.load_weights(weights)
         else:
             from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 
             model = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
             patch_vllm_moe_model_weight_loader(model)
-            model.load_weights(weights)
+            try:
+                model.load_weights(weights)
+            except Exception as e:
+                print(model.state_dict().keys())
+                raise e
 
 
 # https://github.com/vllm-project/vllm/issues/13175

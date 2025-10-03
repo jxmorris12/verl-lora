@@ -53,7 +53,7 @@ def run_prime(config, compute_score=None):
         ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
         print(f"ray init kwargs: {ray_init_kwargs}")
         # this is for local ray cluster
-        ray.init(**OmegaConf.to_container(ray_init_kwargs))
+        ray.init(**OmegaConf.to_container(ray_init_kwargs), local_mode=True)
 
     ray.get(main_task.remote(config, compute_score))
 
