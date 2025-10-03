@@ -326,21 +326,11 @@ class vLLMRollout(BaseRollout):
                 "n": 1,  # if validate, already repeat in ray_trainer
             }
 
-        lora_requests = None
-        # if self.lora_kwargs:
-        #     lora_int_ids = list(self.inference_engine.llm_engine.list_loras())
-        #     if len(lora_int_ids) > 0:
-        #         lora_int_id = lora_int_ids[0]
-        #         lora_requests = [
-        #             LoRARequest(lora_name=f"{lora_int_id}", lora_int_id=lora_int_id, lora_path="/simon-stub-path")
-        #         ] * batch_size
-
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
             outputs = self.inference_engine.generate(
                 prompts=vllm_inputs,  # because we have already convert it to prompt token id
                 sampling_params=self.sampling_params,
-                # lora_request=lora_requests,
                 use_tqdm=False,
             )
 
@@ -473,10 +463,6 @@ class vLLMAsyncRollout(BaseRollout):
         self.tokenizer = model_config.tokenizer
         self.inference_engine: WorkerWrapperBase = None
         self.address = self._init_zeromq()
-        self.lora_config = (
-            {"max_loras": 1, "max_lora_rank": model_config.lora_rank} if model_config.lora_rank > 0 else {}
-        )
-
         # https://github.com/vllm-project/vllm/issues/25171
         if config.layered_summon or config.expert_parallel_size > 1:
             self.sleep_level = 1
@@ -537,8 +523,6 @@ class vLLMAsyncRollout(BaseRollout):
             else int(ray.get_runtime_context().get_accelerator_ids()[device_name][0])
         )
         self.vllm_config = all_kwargs[0]["vllm_config"]
-        # if self.lora_config:
-        #     self.vllm_config.lora_config = LoRAConfig(**self.lora_config)
         self.inference_engine = WorkerWrapperBase(vllm_config=self.vllm_config)
         self.inference_engine.init_worker(all_kwargs)
 
@@ -576,19 +560,6 @@ class vLLMAsyncRollout(BaseRollout):
         Args:
             weights: A generator that yields the name of the weight tensor and the tensor itself.
         """
-        # peft_config, base_sync_done = kwargs.get("peft_config", None), kwargs.get("base_sync_done", False)
-        # if peft_config and base_sync_done:
-        #     lora_int_id = int(time.time_ns() % 0x7FFFFFFF)
-        #     lora_reqest = TensorLoRARequest(
-        #         lora_name=f"{lora_int_id}",
-        #         lora_int_id=lora_int_id,
-        #         lora_path="simon_lora_path",
-        #         peft_config=asdict(peft_config),
-        #         lora_tensors=weights,
-        #     )
-        #     self.inference_engine.worker.add_lora(lora_reqest)
-        #     logger.info(f"vLLM load weights, loaded_params: {len(weights)}")
-        # else:
         from verl.utils.vllm.patch import patch_vllm_moe_model_weight_loader
 
         model = self.inference_engine.worker.model_runner.model

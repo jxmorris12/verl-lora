@@ -96,6 +96,26 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 device_name = get_device_name()
 
 
+def collect_lora_params_summoned(module: torch.nn.Module):
+    from collections import OrderedDict
+    lora_params = OrderedDict()
+    model = module.base_model.model
+    orig_dev = "cpu" if "cpu" in str(next(model.parameters()).device) else get_device_name()
+    model = model.to("cpu")
+    for name, param in model.state_dict().items():
+        if any(x in name for x in ["_flat_param", "lora_"]):
+            continue
+        name = name.replace("_fsdp_wrapped_module.", "").replace(".base_layer", "")
+        lora_params[name] = (
+            param.full_tensor().detach().cpu()
+            if hasattr(param, "full_tensor")
+            else param.detach().cpu()
+        )
+    model = model.to(orig_dev)
+    get_torch_device().empty_cache()
+    return lora_params
+
+
 def create_device_mesh(world_size, fsdp_size):
     if fsdp_size < 0 or fsdp_size >= world_size:
         device_mesh = init_device_mesh(device_name, mesh_shape=(world_size,), mesh_dim_names=["fsdp"])
@@ -648,26 +668,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # else:
         #     print("fit() - not calling wandb.watch on actor module")
 
-
-        def collect_lora_params_summoned(module: torch.nn.Module):
-            from collections import OrderedDict
-            lora_params = OrderedDict()
-            model = peft_model.base_model.model
-            orig_dev = "cpu" if "cpu" in str(next(model.parameters()).device) else get_device_name()
-            model = model.to("cpu")
-            for name, param in model.state_dict().items():
-                if any(x in name for x in ["_flat_param", "lora_"]):
-                    continue
-                name = name.replace("_fsdp_wrapped_module.", "").replace(".base_layer", "")
-                lora_params[name] = (
-                    param.full_tensor().detach().cpu()
-                    if hasattr(param, "full_tensor")
-                    else param.detach().cpu()
-                )
-            model = model.to(orig_dev)
-            get_torch_device().empty_cache()
-            return lora_params
-
         merged_adapter = False
         
         # Merge the adapter so state_dict() reflects full (base+LoRA) weights.
@@ -678,9 +678,21 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             with torch.no_grad():
                 peft_model.merge_adapter(safe_merge=True)
             print("[rollout_mode] merge_adapter")
-            params = collect_lora_params_summoned(module=self.actor_module_fsdp)
+            
+            # Collect params directly without moving model (we're already inside summon_full_params)
+            from collections import OrderedDict
+            lora_params = OrderedDict()
+            # Access the base model the same way as collect_lora_params_summoned but stay on GPU
+            model = peft_model.base_model.model
+            for name, param in model.state_dict().items():
+                if any(x in name for x in ["_flat_param", "lora_"]):
+                    continue
+                name_clean = name.replace("_fsdp_wrapped_module.", "").replace(".base_layer", "")
+                lora_params[name_clean] = param.detach().clone()
+            
             params = convert_weight_keys(
-                params, getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
+                lora_params, 
+                getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
             )
 
             log_gpu_memory_usage("Before offload_fsdp_model_to_cpu", logger=logger)
@@ -692,7 +704,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
             device = get_device_id()  # used when fsdp2 set cpu_offload_policy
             per_tensor_param = (
-                (name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param)
+                (name, param.to(device, non_blocking=True).full_tensor() if isinstance(param, DTensor) else param.to(device, non_blocking=True))
                 for name, param in params.items()
             )
 
