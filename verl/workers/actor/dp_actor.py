@@ -291,6 +291,7 @@ class DataParallelPPOActor(BasePPOActor):
             self.actor_optimizer.zero_grad()
         else:
             self.actor_optimizer.step()
+        
         return grad_norm
 
     @GPUMemoryLogger(role="dp actor", logger=logger)
@@ -491,13 +492,13 @@ class DataParallelPPOActor(BasePPOActor):
                     append_to_dict(metrics, micro_batch_metrics)
                 
                 ################ Get gradnorms ################
-                with FSDP.summon_full_params(self.actor_module, writeback=False, with_grads=True, offload_to_cpu=False):
-                    param_norms = {
-                        f"actor/grad_norm/{k}": v.grad.norm().item()
-                        for k, v in self.actor_module.named_parameters() 
-                        if v.grad is not None
-                    }
-                    append_to_dict(metrics, param_norms)
+                #with FSDP.summon_full_params(self.actor_module, writeback=False, with_grads=True, offload_to_cpu=False):
+                #    param_norms = {
+                #        f"actor/grad_norm/{k}": v.grad.norm().item()
+                #        for k, v in self.actor_module.named_parameters() 
+                #        if v.grad is not None
+                #    }
+                #    append_to_dict(metrics, param_norms)
                 
                 ################ Get gradnorms 
 

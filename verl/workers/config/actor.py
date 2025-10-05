@@ -118,7 +118,7 @@ class ActorConfig(BaseConfig):
     use_fused_kernels: bool = False
     profiler: ProfilerConfig = field(default_factory=ProfilerConfig)
     engine: BaseConfig = field(default_factory=BaseConfig)
-    data_loader_seed = 1
+    data_loader_seed: Optional[int] = None
     rollout_n: int = 1  # must be override by sampling config
     model_config: HFModelConfig = field(default_factory=BaseConfig)
 
@@ -226,6 +226,7 @@ class FSDPActorConfig(ActorConfig):
 
     strategy: str = "fsdp"
     grad_clip: float = 1.0
+    data_loader_seed: Optional[int] = None
     ulysses_sequence_parallel_size: int = 1
     entropy_from_logits_with_chunking: bool = False
     entropy_checkpointing: bool = False

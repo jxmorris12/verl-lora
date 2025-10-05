@@ -21,6 +21,7 @@ This trainer supports model-agonistic model initialization with huggingface
 import json
 import os
 import uuid
+import time
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -752,7 +753,10 @@ class RayPPOTrainer:
 
         # we should create rollout at the end so that vllm can have a better estimation of kv cache memory
         self.actor_rollout_wg = all_wg["actor_rollout"]
-        self.actor_rollout_wg.init_model()
+
+        # For some reason the dictionary returned gets wrapped in a list,
+        # so we need to index it.
+        self._actor_module_metrics = self.actor_rollout_wg.init_model()[0]
 
         # create async rollout manager and request scheduler
         self.async_rollout_mode = False
@@ -925,16 +929,18 @@ class RayPPOTrainer:
         to construct the PPO dataflow.
         The light-weight advantage computation is done on the driver process.
         """
+
         from omegaconf import OmegaConf
-
+        config = OmegaConf.to_container(self.config, resolve=True)
+       
         from verl.utils.tracking import Tracking
-
         logger = Tracking(
             project_name=self.config.trainer.project_name,
             experiment_name=self.config.trainer.experiment_name,
             default_backend=self.config.trainer.logger,
-            config=OmegaConf.to_container(self.config, resolve=True),
+            config=config,
         )
+        logger.log(data=self._actor_module_metrics, step=0)
         self.global_steps = 0
 
         # load checkpoint before doing anything
@@ -1233,3 +1239,14 @@ class RayPPOTrainer:
                 if hasattr(self.train_dataset, "on_batch_end"):
                     # The dataset may be changed after each training batch
                     self.train_dataset.on_batch_end(batch=batch)
+
+        # val after train
+        val_metrics = self._validate()
+        pprint(f"Final validation metrics: {val_metrics}")
+        print("logged to", logger.logger.keys())
+        logger.log(data=val_metrics, step=self.global_steps)
+        for k,v in logger.logger.items():
+            print(f"[ray_trainer] closing logger `{k}`.")
+            logger.logger["wandb"].finish()
+        del logger
+        time.sleep(10)

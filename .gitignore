@@ -126,3 +126,9 @@ logs
 log
 outputs
 .history
+
+docker/
+log_submitit/
+
+*.txt
+CONTRIBUTING.md

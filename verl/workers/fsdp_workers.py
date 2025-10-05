@@ -89,7 +89,7 @@ from verl.utils.py_functional import convert_to_regular_types
 from verl.workers.config import FSDPCriticConfig, FSDPEngineConfig, HFModelConfig, RolloutConfig
 from verl.workers.rollout import get_rollout_class
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
-# from verl.utils.lora_utils import find_and_initialize_lora_xs
+from verl.utils.lora_utils import find_and_initialize_lora_xs
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
@@ -438,6 +438,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     "exclude_modules": convert_to_regular_types(self.config.model.exclude_modules),
                     "bias": "none",
                 }
+                lora_config = LoraConfig(**lora_config)
+                actor_module = get_peft_model(actor_module, lora_config)
                 if self.config.model.get("use_lora_xs"):
                     reconstruction_config = {
                         "reconstruction_type": "svd",
@@ -456,10 +458,36 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     reconstruction_config["svd"]['rank'] = self.config.model.lora_rank
                     print("*************** Using LoRA-XS ***************")
                     find_and_initialize_lora_xs(
-                        actor_module, lora_config=lora_config, adapter_name="lora_xs", reconstr_type="svd",
+                        actor_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
                                     reconstruct_config=reconstruction_config)
-                else:
-                    actor_module = get_peft_model(actor_module, LoraConfig(**lora_config))
+
+
+        # Count unique trainable parameters
+        metrics = {}
+        all_params = list(actor_module.parameters())
+        all_trainable_params = [p for p in all_params if p.requires_grad]
+        n_total = sum(p.numel() for p in all_params)
+        n_trainable = sum(p.numel() for p in all_trainable_params)
+        n_trainable_unique = 0
+        unique_data_ptrs = set()
+        for p in all_trainable_params:
+            if p.data.data_ptr() not in unique_data_ptrs:
+                n_trainable_unique += p.numel()
+                unique_data_ptrs.add(p.data.data_ptr())
+        metrics["actor/trainable_params_unique"] = n_trainable_unique
+        metrics["actor/trainable_params"] = n_trainable
+        metrics["actor/total_params"] = n_total
+        bits_per_param = {
+            "fp32": 32,
+            "fp16": 16,
+            "bf16": 16,
+            "fp8": 8,
+            "fp4": 4,
+        }
+        metrics["actor/bits_per_param"] = bits_per_param.get(self.config.model.lora_xs_precision, 0)
+        metrics["actor/n_trainable_bits"] = n_trainable_unique * bits_per_param.get(self.config.model.lora_xs_precision, 0)
+        print(metrics)
+        self._module_metrics = metrics
 
         self.use_orig_params = fsdp_config.get("use_orig_params", False)
         if self.config.actor.get("freeze_vision_tower", False):
@@ -884,7 +912,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 processing_class=self.processor if self.processor is not None else self.tokenizer,
                 checkpoint_config=checkpoint_contents,
             )
-        # self._model_watched = False
+        
+        return self._module_metrics
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
     @DistProfiler.annotate(color="red", role="actor_update")
@@ -914,6 +943,16 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             lr = self.actor_lr_scheduler.get_last_lr()[0]
             metrics["actor/lr"] = lr
             self.actor_lr_scheduler.step()
+
+            # Get param counts
+            total_params = 0
+            trainable_params = 0
+            for param in self.actor_module_fsdp.parameters():
+                total_params += param.numel()
+                if param.requires_grad:
+                    trainable_params += param.numel()
+            metrics["actor/total_params"] = total_params
+            metrics["actor/trainable_params"] = trainable_params
 
             # TODO: here, we should return all metrics
             output = DataProto(meta_info={"metrics": metrics})

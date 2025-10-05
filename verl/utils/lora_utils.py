@@ -245,7 +245,7 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
             for j in range(i+1, i+N_to_tie):
                 if j >= len(linear_layers):
                     break
-                linear_layers[j].weight.data = linear_layers[i].weight.data
+                linear_layers[j].weight = linear_layers[i].weight
                 print(f"[lora_xs.find_and_initialize] Tied {j} to layer {i}.")
             i += N_to_tie
 
@@ -273,7 +273,6 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                 print(f"[lora_xs.find_and_initialize] Tying {weight_type} layers: {len(linear_layers)}")
                 tie_linears(linear_layers, N_to_tie)
             # TODO: Consider how to handle off-multiples.
-
         # Count unique weight matrices by memory address
         unique_data_ptrs = set()
         for linear in all_linears:
@@ -284,6 +283,7 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
         print(f"[lora_xs.find_and_initialize] Checksum - number of unique weight matrices: {num_unique_matrices}, dtype: {dtype}, device: {device}")
         print(f"[lora_xs.find_and_initialize] Checksum - number of unique weight matrices: {num_unique_matrices}")
 
+    # import pdb; pdb.set_trace()
     if num_lora_xs_modules == 0:
         raise ValueError(
             f"Target modules {lora_config.target_modules} not found in the base model. "

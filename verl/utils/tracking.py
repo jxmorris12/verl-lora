@@ -18,6 +18,8 @@ A unified tracking interface that supports logging data to different backend
 import dataclasses
 import json
 import os
+import time
+
 from enum import Enum
 from functools import partial
 from pathlib import Path
@@ -468,3 +470,9 @@ class ValidationGenerationsLogger:
         self.writer.add_text("val/generations", text_content, step)
         # Flush to ensure data is written
         self.writer.flush()
+
+    def finish(self):
+        if "wandb" in self.logger:
+            self.logger["wandb"].finish()
+            import time
+            time.sleep(5)
