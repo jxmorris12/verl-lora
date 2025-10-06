@@ -84,6 +84,7 @@ class HFModelConfig(BaseConfig):
     lora_xs_precision: str = "fp32"
     lora_xs_tie_linear_num: int = 1
     lora_xs_tie_linear_mode: str = "tile"
+    lora_xs_learn_diagonal_only: bool = False
 
     use_liger: bool = False
 

@@ -427,6 +427,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             if enable_gradient_checkpointing:
                 actor_module.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
             if self._is_lora:
+                assert self.use_orig_params, "LoRA is only supported when use_orig_params is True"
                 print("Applying LoRA to actor module")
                 actor_module.enable_input_require_grads()
                 # Convert config to regular Python types before creating PEFT model
@@ -454,6 +455,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                         },
                         "tie_linear_num": self.config.model.lora_xs_tie_linear_num,
                         "tie_linear_mode": self.config.model.lora_xs_tie_linear_mode,
+                        "learn_diagonal_only": self.config.model.lora_xs_learn_diagonal_only,
                     }
                     reconstruction_config["svd"]['rank'] = self.config.model.lora_rank
                     print("*************** Using LoRA-XS ***************")
@@ -711,13 +713,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         peft_config = None
 
-        # if not self._model_watched:
-        #     print("fit() - calling wandb.watch on actor module")
-        #     import wandb; wandb.watch(peft_model)
-        #     self._model_watched = True
-        # else:
-        #     print("fit() - not calling wandb.watch on actor module")
-
         merged_adapter = False
         
         # Merge the adapter so state_dict() reflects full (base+LoRA) weights.
@@ -725,25 +720,33 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         # We set writeback=False so that the merge is "undone" at the end.
         with FSDP.summon_full_params(self.actor_module_fsdp, writeback=False):
             peft_model = getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
-            with torch.no_grad():
-                peft_model.merge_adapter(safe_merge=True)
-            print("[rollout_mode] merge_adapter")
+
+            is_in_peft = hasattr(peft_model, "merge_adapter")
+            if is_in_peft:
+                with torch.no_grad():
+                    peft_model.merge_adapter(safe_merge=True)
+                print("[rollout_mode] merge_adapter")
+                # Collect params directly without moving model (we're already inside summon_full_params)
+                from collections import OrderedDict
+                lora_params = OrderedDict()
+                # Access the base model the same way as collect_lora_params_summoned but stay on GPU
+                model = peft_model.base_model.model
+                for name, param in model.state_dict().items():
+                    if any(x in name for x in ["_flat_param", "lora_"]):
+                        continue
+                    name_clean = name.replace("_fsdp_wrapped_module.", "").replace(".base_layer", "")
+                    lora_params[name_clean] = param.detach().clone()
+                    params = convert_weight_keys(
+                        lora_params, 
+                        getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
+                    )
+            else:
+                print("[rollout_mode] no merge_adapter")
+                params = self.actor_module_fsdp.state_dict()
+                params = convert_weight_keys(
+                    params, getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
+                )
             
-            # Collect params directly without moving model (we're already inside summon_full_params)
-            from collections import OrderedDict
-            lora_params = OrderedDict()
-            # Access the base model the same way as collect_lora_params_summoned but stay on GPU
-            model = peft_model.base_model.model
-            for name, param in model.state_dict().items():
-                if any(x in name for x in ["_flat_param", "lora_"]):
-                    continue
-                name_clean = name.replace("_fsdp_wrapped_module.", "").replace(".base_layer", "")
-                lora_params[name_clean] = param.detach().clone()
-            
-            params = convert_weight_keys(
-                lora_params, 
-                getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
-            )
 
             log_gpu_memory_usage("Before offload_fsdp_model_to_cpu", logger=logger)
             if self._is_offload_param:
@@ -765,13 +768,23 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
             await self.rollout.update_weights(
                 per_tensor_param, 
-                peft_config=peft_config,   # None when merged -> vLLM receives full weights
+                peft_config=None,   # None when merged -> vLLM receives full weights
                 base_sync_done=self.base_sync_done
             )
-            peft_model.unmerge_adapter()
+
+            if is_in_peft:
+                peft_model.unmerge_adapter()
+                print("[rollout_mode] unmerge_adapter")
+            else:
+                print("[rollout_mode] no unmerge_adapter")
+                
+            del peft_model
+            del params
+            del per_tensor_param
+            aggressive_empty_cache(force_sync=True)
+
         log_gpu_memory_usage("After update_weights", logger=logger)
-        del params, per_tensor_param
-        aggressive_empty_cache(force_sync=True)
+        
         if self.config.rollout.free_cache_engine:
             await self.rollout.resume(tags=["kv_cache"])
         log_gpu_memory_usage("After resume kv_cache", logger=logger)
@@ -1382,10 +1395,11 @@ class CriticWorker(Worker, DistProfilerExtension):
                 },
                 "tie_linear_num": self.config.model.lora_xs_tie_linear_num,
                 "tie_linear_mode": self.config.model.lora_xs_tie_linear_mode,
+                "learn_diagonal_only": self.config.model.lora_xs_learn_diagonal_only,
             }
             reconstruction_config["svd"]['rank'] = self.config.model.lora_r
             print("*************** Using LoRA-XS ***************")
-            find_and_initialize(critic_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
+            find_and_initialize_lora_xs(critic_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
                                 reconstruct_config=reconstruction_config)
 
         if self.rank == 0:

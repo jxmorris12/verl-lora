@@ -19,6 +19,34 @@ from typing import Tuple
 
 import torch.nn.functional as F
 
+class DiagonalLinear(torch.nn.Module):
+    def __init__(self, features):
+        super().__init__()
+        self.features = features
+        
+        # Only store the diagonal elements as a trainable parameter
+        self.diagonal = torch.nn.Parameter(torch.randn(features))
+    
+    @property
+    def weight(self):
+        return torch.diag(self.diagonal)
+        
+    @weight.setter
+    def weight(self, value):
+        # Extract diagonal and set it
+        if value.dim() == 2:
+            # If it's a 2D matrix, extract the diagonal
+            self.diagonal.data = torch.diagonal(value)
+        elif value.dim() == 1:
+            # If it's already 1D, just set it directly
+            self.diagonal.data = value
+        else:
+            raise ValueError(f"Expected 1D or 2D tensor, got {value.dim()}D")
+
+    def forward(self, x):
+        output = x * self.weight
+        return output
+
 
 def transpose(weight, fan_in_fan_out):
     return weight.T if fan_in_fan_out else weight
@@ -50,10 +78,13 @@ def get_delta_weight(self, adapter) -> torch.Tensor:
         weight_B = weight_B.float()
     
     default_lora_latent_mapping = self.default_lora_latent_mapping.to(weight_A.dtype)
-    output_tensor = transpose(
-        weight_B @ default_lora_latent_mapping.weight @ weight_A,
-        self.fan_in_fan_out
-    ) * self.scaling[adapter]
+    try:
+        output_tensor = transpose(
+            weight_B @ default_lora_latent_mapping.weight @ weight_A,
+            self.fan_in_fan_out
+        ) * self.scaling[adapter]
+    except:
+        import pdb; pdb.set_trace()
 
     if cast_to_fp32:
         output_tensor = output_tensor.to(dtype=dtype)
@@ -82,7 +113,7 @@ def forward_latent(self, x: torch.Tensor):
         # adding latent_mapping in the forward loop
         x = self.lora_dropout[self.active_adapter[0]](x)
         x = self.lora_A[self.active_adapter[0]](x)
-        x = F.linear(x, self.default_lora_latent_mapping.weight.to(x.dtype))
+        x = F.linear(x, self.default_lora_latent_mapping.weight.to(x.dtype).contiguous())
         result += (
             self.lora_B[self.active_adapter[0]](x)
             * self.scaling[self.active_adapter[0]]
@@ -112,9 +143,12 @@ def get_linear_rec_svd(input_matrix: np.ndarray, rank: int, n_iter: int,
 def get_replacement_module(weight, module_name, type, reconstruct_config):
     cfg = reconstruct_config[type]
     if type == 'svd':
-        reconstructed_matrix, enc, dec = get_linear_rec_svd(weight.float().cpu().detach().numpy(), cfg['rank'],
-                                                            cfg['n_iter'],
-                                                            cfg['random_state'])
+        reconstructed_matrix, enc, dec = get_linear_rec_svd(
+            input_matrix=weight.float().cpu().detach().numpy(), 
+            rank=cfg['rank'], 
+            n_iter=cfg['n_iter'], 
+            random_state=cfg['random_state']
+        )
         final_enc = torch.tensor(enc, dtype=weight.dtype, device=weight.device)
         final_dec = torch.tensor(dec, dtype=weight.dtype, device=weight.device)
     else:
@@ -166,6 +200,7 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
     :param adapter_name: options: 'default'
     :param reconstr_type: options: 'svd'
     """
+    learn_diagonal_only = reconstruct_config['learn_diagonal_only']
     half_init_dec = reconstruct_config['half_init_dec']
     replacement_module_random_init = reconstruct_config['replacement_module_random_init']
     reconstruction_mode = reconstruct_config['reconstr_mode']
@@ -222,7 +257,11 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                         target.forward = types.MethodType(forward_latent, target)
                         target.get_delta_weight = types.MethodType(get_delta_weight, target)
                         replace_module_weights(target.lora_A.default, replacement_encoder_weight.T)
-                        target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
+
+                        if learn_diagonal_only:
+                            target.default_lora_latent_mapping = DiagonalLinear(lora_config.r)
+                        else:
+                            target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
                         init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
                         target.default_lora_latent_mapping.to(target.lora_A.default.weight.device)
 
