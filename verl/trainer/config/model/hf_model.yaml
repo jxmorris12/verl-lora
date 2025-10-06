@@ -63,6 +63,9 @@ lora_xs_tie_linear_num: 1
 # LoRA-XS tie linear mode
 lora_xs_tie_linear_mode: "tile"
 
+# whether to learn diagonal only
+lora_xs_learn_diagonal_only: False
+
 # whether to use liger. Only valid when we use hf model definition
 use_liger: False
 
