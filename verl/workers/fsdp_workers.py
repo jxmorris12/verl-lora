@@ -364,7 +364,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # NOTE(fix me): tie_word_embedding causes meta_tensor init to hang
         init_context = get_init_weight_context_manager(
-            use_meta_tensor=not actor_model_config.tie_word_embeddings, mesh=self.device_mesh
+            # use_meta_tensor=not actor_model_config.tie_word_embeddings,
+            use_meta_tensor=False,
+            mesh=self.device_mesh
         )
 
         with init_context(), warnings.catch_warnings():
@@ -412,7 +414,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             fused_kernels_backend = (
                 fused_kernel_options.get("impl_backend", None) if fused_kernel_options is not None else None
             )
-
             apply_monkey_patch(
                 model=actor_module,
                 use_remove_padding=use_remove_padding,
@@ -440,6 +441,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 }
                 lora_config = LoraConfig(**lora_config)
                 actor_module = get_peft_model(actor_module, lora_config)
+
                 if self.config.model.get("use_lora_xs"):
                     reconstruction_config = {
                         "reconstruction_type": "svd",
@@ -460,34 +462,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     find_and_initialize_lora_xs(
                         actor_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
                                     reconstruct_config=reconstruction_config)
-
-
-        # Count unique trainable parameters
-        metrics = {}
-        all_params = list(actor_module.parameters())
-        all_trainable_params = [p for p in all_params if p.requires_grad]
-        n_total = sum(p.numel() for p in all_params)
-        n_trainable = sum(p.numel() for p in all_trainable_params)
-        n_trainable_unique = 0
-        unique_data_ptrs = set()
-        for p in all_trainable_params:
-            if p.data.data_ptr() not in unique_data_ptrs:
-                n_trainable_unique += p.numel()
-                unique_data_ptrs.add(p.data.data_ptr())
-        metrics["actor/trainable_params_unique"] = n_trainable_unique
-        metrics["actor/trainable_params"] = n_trainable
-        metrics["actor/total_params"] = n_total
-        bits_per_param = {
-            "fp32": 32,
-            "fp16": 16,
-            "bf16": 16,
-            "fp8": 8,
-            "fp4": 4,
-        }
-        metrics["actor/bits_per_param"] = bits_per_param.get(self.config.model.lora_xs_precision, 0)
-        metrics["actor/n_trainable_bits"] = n_trainable_unique * bits_per_param.get(self.config.model.lora_xs_precision, 0)
-        print(metrics)
-        self._module_metrics = metrics
 
         self.use_orig_params = fsdp_config.get("use_orig_params", False)
         if self.config.actor.get("freeze_vision_tower", False):
@@ -586,6 +560,33 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             enable_activation_offloading(actor_module_fsdp, fsdp_strategy, enable_gradient_checkpointing)
 
         log_gpu_memory_usage(f"After {role} FSDP init", logger=logger)
+
+        # Count unique trainable parameters
+        metrics = {}
+        all_params = list(actor_module.parameters())
+        all_trainable_params = [p for p in all_params if p.requires_grad]
+        n_total = sum(p.numel() for p in all_params)
+        n_trainable = sum(p.numel() for p in all_trainable_params)
+        n_trainable_unique = 0
+        unique_data_ptrs = set()
+        for p in all_trainable_params:
+            if p.data.data_ptr() not in unique_data_ptrs:
+                n_trainable_unique += p.numel()
+                unique_data_ptrs.add(p.data.data_ptr())
+        metrics["actor/trainable_params_unique"] = n_trainable_unique
+        metrics["actor/trainable_params"] = n_trainable
+        metrics["actor/total_params"] = n_total
+        bits_per_param = {
+            "fp32": 32,
+            "fp16": 16,
+            "bf16": 16,
+            "fp8": 8,
+            "fp4": 4,
+        }
+        metrics["actor/bits_per_param"] = bits_per_param.get(self.config.model.lora_xs_precision, 0)
+        metrics["actor/n_trainable_bits"] = n_trainable_unique * bits_per_param.get(self.config.model.lora_xs_precision, 0)
+        print(metrics)
+        self._module_metrics = metrics
 
         # TODO: add more optimizer args into config
         if role == "actor" and optim_config is not None:
@@ -1385,8 +1386,9 @@ class CriticWorker(Worker, DistProfilerExtension):
             }
             reconstruction_config["svd"]['rank'] = self.config.model.lora_r
             print("*************** Using LoRA-XS ***************")
-            find_and_initialize(critic_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
-                                reconstruct_config=reconstruction_config)
+            with FSDP.summon_full_params(critic_module):
+                find_and_initialize_lora_xs(critic_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
+                                    reconstruct_config=reconstruction_config)
 
         if self.rank == 0:
             print_model_size(critic_module)
