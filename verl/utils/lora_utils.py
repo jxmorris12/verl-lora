@@ -23,30 +23,10 @@ class DiagonalLinear(torch.nn.Module):
     def __init__(self, features):
         super().__init__()
         self.features = features
-        
-        # Only store the diagonal elements as a trainable parameter
-        self.diagonal = torch.nn.Parameter(torch.randn(features))
+        self.weight = torch.nn.Parameter(torch.randn(features))  # Renamed from diagonal
     
-    @property
-    def weight(self):
-        return torch.diag(self.diagonal)
-        
-    @weight.setter
-    def weight(self, value):
-        # Extract diagonal and set it
-        if value.dim() == 2:
-            # If it's a 2D matrix, extract the diagonal
-            self.diagonal.data = torch.diagonal(value)
-        elif value.dim() == 1:
-            # If it's already 1D, just set it directly
-            self.diagonal.data = value
-        else:
-            raise ValueError(f"Expected 1D or 2D tensor, got {value.dim()}D")
-
     def forward(self, x):
-        output = x * self.weight
-        return output
-
+        return x * self.weight
 
 def transpose(weight, fan_in_fan_out):
     return weight.T if fan_in_fan_out else weight
@@ -78,13 +58,18 @@ def get_delta_weight(self, adapter) -> torch.Tensor:
         weight_B = weight_B.float()
     
     default_lora_latent_mapping = self.default_lora_latent_mapping.to(weight_A.dtype)
-    try:
+    if default_lora_latent_mapping.weight.dim() == 2:
         output_tensor = transpose(
             weight_B @ default_lora_latent_mapping.weight @ weight_A,
             self.fan_in_fan_out
         ) * self.scaling[adapter]
-    except:
-        import pdb; pdb.set_trace()
+    elif default_lora_latent_mapping.weight.dim() == 1:
+        output_tensor = transpose(
+            (weight_B * default_lora_latent_mapping.weight) @ weight_A,
+            self.fan_in_fan_out
+        ) * self.scaling[adapter]
+    else:
+        raise ValueError(f"Expected 1D or 2D tensor, got {default_lora_latent_mapping.weight.dim()}D")
 
     if cast_to_fp32:
         output_tensor = output_tensor.to(dtype=dtype)
@@ -113,7 +98,16 @@ def forward_latent(self, x: torch.Tensor):
         # adding latent_mapping in the forward loop
         x = self.lora_dropout[self.active_adapter[0]](x)
         x = self.lora_A[self.active_adapter[0]](x)
-        x = F.linear(x, self.default_lora_latent_mapping.weight.to(x.dtype).contiguous())
+        
+        # Handle both 1D and 2D latent mapping
+        latent_weight = self.default_lora_latent_mapping.weight.to(x.dtype).contiguous()
+        if latent_weight.dim() == 2:
+            x = F.linear(x, latent_weight)
+        elif latent_weight.dim() == 1:
+            x = x * latent_weight  # element-wise multiplication for 1D case
+        else:
+            raise ValueError(f"Expected 1D or 2D latent mapping, got {latent_weight.dim()}D")
+        
         result += (
             self.lora_B[self.active_adapter[0]](x)
             * self.scaling[self.active_adapter[0]]
@@ -213,7 +207,7 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
         )
     key_list = [key for key, _ in model.named_modules()]
     assert (not isinstance(lora_config.target_modules, str))
-    print("Iterating through model's specified modules to initialize A/B matrices.")
+    print("Iterating through model's specified modules to initialize A/B matrices. [target_modules]", lora_config.target_modules)
     all_linear_names = []
     all_linears = []
     pbar = tqdm(key_list, desc='Initializing Lora-XS')
