@@ -590,6 +590,14 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         print(metrics)
         self._module_metrics = metrics
 
+        ##### Test
+        with actor_module_fsdp.disable_adapter():
+            print("[test] disable_adapter")
+        new_n_trainable = sum(p.numel() for p in actor_module_fsdp.parameters() if p.requires_grad)
+        print("[test] n_trainable:", n_trainable, "new_n_trainable:", new_n_trainable)
+        assert n_trainable == new_n_trainable, f"num_trainable_params should be the same, got {new_n_trainable} instead of {n_trainable}"
+        ##### Test
+
         # TODO: add more optimizer args into config
         if role == "actor" and optim_config is not None:
             from verl.utils.torch_functional import get_constant_schedule_with_warmup, get_cosine_schedule_with_warmup
@@ -1045,6 +1053,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         from contextlib import nullcontext
 
         is_lora = data.meta_info.pop("is_lora", False)
+        print("[compute_log_prob] is_lora:", is_lora)
         adapter_ctx = self.actor.actor_module.disable_adapter() if is_lora else nullcontext()
         # we should always recompute old_log_probs when it is HybridEngine
         data.meta_info["micro_batch_size"] = self.config.rollout.log_prob_micro_batch_size_per_gpu

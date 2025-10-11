@@ -1,5 +1,6 @@
 # https://github.com/MohammadrezaBanaei/LoRA-XS/blob/main/utils/initialization_utils.py
 
+from contextlib import contextmanager
 import math
 import re
 import types
@@ -32,7 +33,30 @@ def transpose(weight, fan_in_fan_out):
     return weight.T if fan_in_fan_out else weight
 
 
-def get_delta_weight(self, adapter) -> torch.Tensor:
+
+@contextmanager
+def disable_adapter(self):
+    n_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+    adapter_modules = []
+    for module in self.modules():
+        if hasattr(module, "_disable_adapters"):
+            adapter_modules.append((module, module._disable_adapters))
+    try:
+        # Turn off adapter layers for forward/backward while inside the CM
+        self.base_model.disable_adapter_layers()
+        yield
+    finally:
+        self.base_model.enable_adapter_layers()
+        for active_adapter, is_disabled in adapter_modules:
+            active_adapter.enable_adapters(not is_disabled)
+            if hasattr(active_adapter, "lora_A"):
+                active_adapter.lora_A.default.weight.requires_grad = False  # only the r*r matrix will be tuned
+            if hasattr(active_adapter, "lora_B"):
+                active_adapter.lora_B.default.weight.requires_grad = False  # only the r*r matrix will be tuned
+    new_n_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
+
+
+def lora_get_delta_weight(self, adapter) -> torch.Tensor:
     # This function is introduced in newer PEFT versions. we modify this function instead of modifying
     # the merge function (as we did previously for version 0.4.0 of PEFT).
     """
@@ -81,7 +105,7 @@ def get_delta_weight(self, adapter) -> torch.Tensor:
     return output_tensor
 
 
-def forward_latent(self, x: torch.Tensor):
+def lora_forward_latent(self, x: torch.Tensor):
     previous_dtype = x.dtype
 
     if self.active_adapter[0] not in self.lora_A.keys():
@@ -212,6 +236,8 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
     all_linears = []
     pbar = tqdm(key_list, desc='Initializing Lora-XS')
     num_lora_xs_modules = 0
+    model.disable_adapter = types.MethodType(disable_adapter, model)
+
     for key in pbar:
         target_module_found = any(key.endswith(target_key) for target_key in lora_config.target_modules)
         if target_module_found:
@@ -247,26 +273,24 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                         kaiming_uniform_init(replacement_encoder_weight)
                         kaiming_uniform_init(replacement_decoder_weight)
                     replace_module_weights(target.lora_B.default, replacement_decoder_weight.T)
-                    if r_squared:
-                        target.forward = types.MethodType(forward_latent, target)
-                        target.get_delta_weight = types.MethodType(get_delta_weight, target)
-                        replace_module_weights(target.lora_A.default, replacement_encoder_weight.T)
+                    assert r_squared == True, "r_squared should be set"
+                    target.forward = types.MethodType(lora_forward_latent, target)
+                    target.get_delta_weight = types.MethodType(lora_get_delta_weight, target)
+                    replace_module_weights(target.lora_A.default, replacement_encoder_weight.T)
 
-                        if learn_diagonal_only:
-                            target.default_lora_latent_mapping = DiagonalLinear(lora_config.r)
-                        else:
-                            target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
-                        init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
-                        target.default_lora_latent_mapping.to(target.lora_A.default.weight.device)
-
-                        all_linear_names.append(key)
-                        all_linears.append(target.default_lora_latent_mapping)
-
-                        target.lora_A.default.weight.requires_grad = False  # only the r*r matrix will be tuned
-                        target.lora_B.default.weight.requires_grad = False  # only the r*r matrix will be tuned
-
+                    if learn_diagonal_only:
+                        target.default_lora_latent_mapping = DiagonalLinear(lora_config.r)
                     else:
-                        init_module_weights(target.lora_A.default, sigma=0.00001)
+                        target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
+                    init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
+                    target.default_lora_latent_mapping.to(target.lora_A.default.weight.device)
+
+                    all_linear_names.append(key)
+                    all_linears.append(target.default_lora_latent_mapping)
+
+                    target.lora_A.default.weight.requires_grad = False  # only the r*r matrix will be tuned
+                    target.lora_B.default.weight.requires_grad = False  # only the r*r matrix will be tuned
+
                 pbar.set_postfix(num_lora_xs_modules=num_lora_xs_modules)
 
             else:
