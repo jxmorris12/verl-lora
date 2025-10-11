@@ -85,7 +85,7 @@ class HFModelConfig(BaseConfig):
     lora_xs_tie_linear_num: int = 1
     lora_xs_tie_linear_mode: str = "tile"
     lora_xs_learn_diagonal_only: bool = False
-
+    project_trainable_parameters_rank: int = 0
     use_liger: bool = False
 
     use_fused_kernels: bool = False

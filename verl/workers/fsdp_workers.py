@@ -465,6 +465,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                         actor_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
                                     reconstruct_config=reconstruction_config)
 
+        if self.config.model.project_trainable_parameters_rank > 0:
+            from verl.utils.lora_utils import project_trainable_parameters
+            project_trainable_parameters(actor_module, rank=self.config.model.project_trainable_parameters_rank)
+
         self.use_orig_params = fsdp_config.get("use_orig_params", False)
         if self.config.actor.get("freeze_vision_tower", False):
             vision_tower = get_vl_model_vision_tower(actor_module)
@@ -506,12 +510,29 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if self._is_rollout and self.config.rollout.name == "hf":
             # TODO(zhangchi.usc1992, shengguangming) fix me. Current, auto_wrap_policy causes HFRollout to hang in Gemma
             auto_wrap_policy = None
+        
+        if self.config.model.project_trainable_parameters_rank > 0:
+            auto_wrap_policy = None
+        #     from torch.nn.utils.parametrize import ParametrizationList
+        #     base = auto_wrap_policy            
+        #     def policy(module, recurse, nonwrapped_numel):
+        #         if isinstance(module, (FSDP, ParametrizationList)):
+        #             return False
+        #         return base(module, recurse, nonwrapped_numel)
+
+        #     auto_wrap_policy = policy
 
         if self.rank == 0:
             print(f"wrap_policy: {auto_wrap_policy}")
 
         fsdp_mesh = self.device_mesh
         sharding_strategy = get_sharding_strategy(fsdp_mesh)
+
+        # Ensure no FSDP doublewrapping
+        # fsdp_dup_wrapper_name = [n for n, m in actor_module.named_modules() if isinstance(m, FSDP)]
+        # if fsdp_dup_wrapper_name:
+        #     raise RuntimeError(f"Found pre-wrapped FSDP modules: {fsdp_dup_wrapper_name}")
+
 
         # TODO: add transformer policy
         # We force reference policy to use CPUOffload to save memory.
@@ -1402,6 +1423,11 @@ class CriticWorker(Worker, DistProfilerExtension):
             print("*************** Using LoRA-XS ***************")
             find_and_initialize_lora_xs(critic_module, lora_config=lora_config, adapter_name="lora", reconstr_type="svd",
                                 reconstruct_config=reconstruction_config)
+
+        
+        if self.config.model.project_trainable_parameters_rank > 0:
+            from verl.utils.lora_utils import project_trainable_parameters
+            project_trainable_parameters(critic_module, rank=self.config.model.project_trainable_parameters_rank)
 
         if self.rank == 0:
             print_model_size(critic_module)

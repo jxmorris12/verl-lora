@@ -11,6 +11,7 @@ import torch
 from peft.import_utils import is_bnb_available
 from peft.utils import _get_submodules
 from torch.nn import init
+import torch.nn as nn
 from tqdm import tqdm
 
 from sklearn.decomposition import TruncatedSVD
@@ -159,6 +160,12 @@ def init_module_weights(target_module: torch.nn.Linear, sigma: float):
             torch.nn.init.zeros_(target_module.bias)
 
 
+def init_diagonal_weights(target_module: DiagonalLinear, sigma: float):
+    # Initialize diagonal weights close to 1 (identity-like) for better performance
+    # For diagonal matrices, we want values around 1, not 0
+    torch.nn.init.normal_(target_module.weight, mean=1.0, std=sigma)
+
+
 def replace_module_weights(target_module, new_weight):
     device = target_module.weight.device
     target_module.weight = torch.nn.Parameter(new_weight.to(target_module.weight.dtype)).to(device)
@@ -247,26 +254,24 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                         kaiming_uniform_init(replacement_encoder_weight)
                         kaiming_uniform_init(replacement_decoder_weight)
                     replace_module_weights(target.lora_B.default, replacement_decoder_weight.T)
-                    if r_squared:
-                        target.forward = types.MethodType(forward_latent, target)
-                        target.get_delta_weight = types.MethodType(get_delta_weight, target)
-                        replace_module_weights(target.lora_A.default, replacement_encoder_weight.T)
+                    assert r_squared, f"r_squared must be True when using Lora-XS"
+                    target.forward = types.MethodType(forward_latent, target)
+                    target.get_delta_weight = types.MethodType(get_delta_weight, target)
+                    replace_module_weights(target.lora_A.default, replacement_encoder_weight.T)
 
-                        if learn_diagonal_only:
-                            target.default_lora_latent_mapping = DiagonalLinear(lora_config.r)
-                        else:
-                            target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
-                        init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
-                        target.default_lora_latent_mapping.to(target.lora_A.default.weight.device)
-
-                        all_linear_names.append(key)
-                        all_linears.append(target.default_lora_latent_mapping)
-
-                        target.lora_A.default.weight.requires_grad = False  # only the r*r matrix will be tuned
-                        target.lora_B.default.weight.requires_grad = False  # only the r*r matrix will be tuned
-
+                    if learn_diagonal_only:
+                        target.default_lora_latent_mapping = DiagonalLinear(lora_config.r)
+                        init_diagonal_weights(target.default_lora_latent_mapping, sigma=0.00001)
                     else:
-                        init_module_weights(target.lora_A.default, sigma=0.00001)
+                        target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
+                        init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
+                    target.default_lora_latent_mapping.to(target.lora_A.default.weight.device)
+
+                    all_linear_names.append(key)
+                    all_linears.append(target.default_lora_latent_mapping)
+
+                    target.lora_A.default.weight.requires_grad = False  # only the r*r matrix will be tuned
+                    target.lora_B.default.weight.requires_grad = False  # only the r*r matrix will be tuned
                 pbar.set_postfix(num_lora_xs_modules=num_lora_xs_modules)
 
             else:
@@ -322,3 +327,63 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
             f"Target modules {lora_config.target_modules} not found in the base model. "
             f"Please check the target modules and try again."
         )
+
+
+class RandomProjection(nn.Module):
+    def __init__(self, projection_dim, total_params, dtype):
+        super().__init__()
+        self.v = nn.Parameter(torch.randn(projection_dim, dtype=dtype))
+        self.projection = nn.Linear(projection_dim, total_params, bias=False, dtype=dtype) 
+        self._dim = projection_dim
+    
+    def forward(self, _):
+        return self.projection(self.v) / math.sqrt(self._dim)
+
+class Slicer(nn.Module):
+    def __init__(self, rp, offset, size, shape):
+        super().__init__()
+        self.rp = rp
+        self.offset = offset
+        self.size = size
+        self.shape = shape
+    
+    def forward(self, _):
+        return self.rp(None)[self.offset:self.offset+self.size].view(self.shape)
+
+
+def project_trainable_parameters(model: torch.nn.Module, rank: int) -> None:        
+    trainable_params = []
+    for module in model.modules():
+        for name, param in module.named_parameters(recurse=False):
+            if param.requires_grad:
+                trainable_params.append((module, name, param))
+
+    total_params = sum(p.numel() for _, _, p in trainable_params)
+    dtype = trainable_params[0][2].dtype
+
+    rp = RandomProjection(
+        projection_dim=rank, 
+        total_params=total_params, 
+        dtype=dtype,
+        rank=rank
+    )
+
+    offset = 0
+    for module, name, param in trainable_params:
+        size = param.numel()
+        shape = param.shape
+        param.requires_grad = False
+        torch.nn.utils.parametrize.register_parametrization(module, name, Slicer(rp, offset, size, shape).to(param.device))
+        offset += size
+
+    rp.v.requires_grad = True
+    rp.projection.weight.requires_grad = False
+
+    # init_module_weights(rp.projection, sigma=0.00001)
+    # init_module_weights(rp.v, sigma=0.00001)
+
+    new_total_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    trainable_names = [name for name, param in model.named_parameters() if param.requires_grad]
+
+    print(f"Created RandomProjection with projection_dim={rank}, before_trainable_params={total_params}, after_trainable_params={new_total_trainable_params}, dtype={dtype}")
+    # print(f"Projected {total_params} trainable parameters to {rank} dimensions.")
