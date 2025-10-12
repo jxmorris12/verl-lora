@@ -55,6 +55,87 @@ def disable_adapter(self):
                 active_adapter.lora_B.default.weight.requires_grad = False  # only the r*r matrix will be tuned
     new_n_trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
 
+def lora_get_delta_weight_faster_chatgpt(self, adapter) -> torch.Tensor:
+    # Shapes: A:(r,n), B:(m,r), M:(r,r), out:(m,n)
+    B_raw = self.lora_B[adapter].weight
+    A_raw = self.lora_A[adapter].weight
+
+    device = B_raw.device
+    dtype  = B_raw.dtype
+    cast_to_fp32 = (device.type == "cpu" and dtype == torch.float16)
+    work_dtype = torch.float32 if cast_to_fp32 else dtype
+
+    # --- per-adapter cache bucket ---
+    ckey = f"_merge_cache_{adapter}"
+    cache = getattr(self, ckey, None)
+    if cache is None:
+        cache = {}
+        setattr(self, ckey, cache)
+
+    # --- cache frozen A/B as contiguous tensors in final compute dtype/device ---
+    A = cache.get("A")
+    B = cache.get("B")
+    if A is None or A.device != device or A.dtype != work_dtype or not A.is_contiguous():
+        A = A_raw.to(device=device, dtype=work_dtype, copy=False).contiguous()
+        cache["A"] = A
+        cache["AT"] = A.transpose(0, 1).contiguous()  # (n, r), useful when we pick (B@M)@A
+    if B is None or B.device != device or B.dtype != work_dtype or not B.is_contiguous():
+        B = B_raw.to(device=device, dtype=work_dtype, copy=False).contiguous()
+        cache["B"] = B
+
+    A = cache["A"]
+    AT = cache["AT"]
+    B = cache["B"]
+
+    r, n = A.shape
+    m, rB = B.shape
+    if r != rB:
+        raise ValueError(f"Rank mismatch: A is (r={r}, n={n}) but B is (m={m}, r={rB})")
+
+    # --- scratch buffers reused every call ---
+    buf_mn = cache.get("buf_mn")
+    if buf_mn is None or buf_mn.shape != (m, n) or buf_mn.dtype != work_dtype or buf_mn.device != device:
+        buf_mn = torch.empty((m, n), device=device, dtype=work_dtype)
+        cache["buf_mn"] = buf_mn
+
+    buf_rn = cache.get("buf_rn")
+    if buf_rn is None or buf_rn.shape != (r, n) or buf_rn.dtype != work_dtype or buf_rn.device != device:
+        buf_rn = torch.empty((r, n), device=device, dtype=work_dtype)
+        cache["buf_rn"] = buf_rn
+
+    buf_mr = cache.get("buf_mr")
+    if buf_mr is None or buf_mr.shape != (m, r) or buf_mr.dtype != work_dtype or buf_mr.device != device:
+        buf_mr = torch.empty((m, r), device=device, dtype=work_dtype)
+        cache["buf_mr"] = buf_mr
+
+    # --- mapping tensor in place (no module casting) ---
+    M = self.default_lora_latent_mapping.weight.to(device=device, dtype=work_dtype, copy=False).contiguous()
+    if M.dim() != 2 or M.shape != (r, r):
+        raise ValueError(f"default_lora_latent_mapping must be square (r×r); got {tuple(M.shape)}")
+
+    scale = self.scaling[adapter]
+
+    with torch.no_grad():
+        # Heuristic: choose association that touches the smaller of m vs n first.
+        # Both do 2 GEMMs; this lightly helps cache locality.
+        if m <= n:
+            # (B @ M) @ A
+            torch.matmul(B, M, out=buf_mr)         # (m, r)
+            torch.matmul(buf_mr, A, out=buf_mn)    # (m, n)
+        else:
+            # B @ (M @ A)
+            torch.matmul(M, A, out=buf_rn)         # (r, n)
+            torch.matmul(B, buf_rn, out=buf_mn)    # (m, n)
+
+        res = transpose(buf_mn, self.fan_in_fan_out).mul_(scale)
+        if cast_to_fp32:
+            res = res.to(dtype=dtype)
+
+        # return a copy so future calls don't mutate our reused buffers
+        return res.clone()
+
+
+
 
 def lora_get_delta_weight(self, adapter) -> torch.Tensor:
     # This function is introduced in newer PEFT versions. we modify this function instead of modifying
@@ -275,7 +356,8 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                     replace_module_weights(target.lora_B.default, replacement_decoder_weight.T)
                     assert r_squared == True, "r_squared should be set"
                     target.forward = types.MethodType(lora_forward_latent, target)
-                    target.get_delta_weight = types.MethodType(lora_get_delta_weight, target)
+                    # target.get_delta_weight = types.MethodType(lora_get_delta_weight, target)
+                    target.get_delta_weight = types.MethodType(lora_get_delta_weight_faster_chatgpt, target)
                     replace_module_weights(target.lora_A.default, replacement_encoder_weight.T)
 
                     if learn_diagonal_only:

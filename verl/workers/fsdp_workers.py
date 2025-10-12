@@ -161,6 +161,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     def __init__(self, config: DictConfig, role: str, **kwargs):
         Worker.__init__(self)
 
+        self._module_metrics = {}
+
         self.config = config
         import torch.distributed
 
@@ -721,7 +723,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         log_gpu_memory_usage("After load_fsdp_model_to_gpu", logger=logger)
 
         peft_config = None
-
         merged_adapter = False
         
         # Merge the adapter so state_dict() reflects full (base+LoRA) weights.
@@ -935,6 +936,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 checkpoint_config=checkpoint_contents,
             )
         
+        print("[fsdp_workers] init_model done -> metrics are None:", self._module_metrics is None)
         return self._module_metrics
 
     @register(dispatch_mode=make_nd_compute_dataproto_dispatch_fn(mesh_name="actor"))
