@@ -1,4 +1,5 @@
 # https://github.com/MohammadrezaBanaei/LoRA-XS/blob/main/utils/initialization_utils.py
+from typing import Tuple
 
 from contextlib import contextmanager
 import math
@@ -20,18 +21,19 @@ from typing import Tuple
 
 import torch.nn.functional as F
 
-class DiagonalLinear(torch.nn.Module):
-    def __init__(self, features):
+class RandomLinear(torch.nn.Module):
+    def __init__(self, r, r_trainable):
         super().__init__()
-        self.features = features
-        self.weight = torch.nn.Parameter(torch.randn(features))  # Renamed from diagonal
+        self.weight = torch.nn.Parameter(torch.randn(r_trainable))
+        self.random_weight = torch.nn.Parameter(torch.randn(r_trainable, r), requires_grad=False)
+        self.r_trainable = r_trainable
     
     def forward(self, x):
-        return x * self.weight
+        weight = self.weight @ self.random_weight / torch.sqrt(self.r_trainable)
+        return x @ weight.T
 
 def transpose(weight, fan_in_fan_out):
     return weight.T if fan_in_fan_out else weight
-
 
 
 @contextmanager
@@ -209,7 +211,7 @@ def lora_forward_latent(self, x: torch.Tensor):
         if latent_weight.dim() == 2:
             x = F.linear(x, latent_weight)
         elif latent_weight.dim() == 1:
-            x = x * latent_weight  # element-wise multiplication for 1D case
+            x = self.default_lora_latent_mapping(x)
         else:
             raise ValueError(f"Expected 1D or 2D latent mapping, got {latent_weight.dim()}D")
         
@@ -224,26 +226,46 @@ def lora_forward_latent(self, x: torch.Tensor):
 
     return result
 
-def run_svd(input_matrix: np.ndarray, rank: int, n_iter: int, random_state: int) -> Tuple[np.ndarray, TruncatedSVD]:
+def run_svd_sklearn(input_matrix: np.ndarray, rank: int, n_iter: int, random_state: int) -> Tuple[np.ndarray, TruncatedSVD]:
     svd = TruncatedSVD(n_components=rank, n_iter=n_iter, random_state=random_state)
     svd.fit(input_matrix)
     reduced_matrix = svd.transform(input_matrix)
     return reduced_matrix, svd
 
 
-def get_linear_rec_svd(input_matrix: np.ndarray, rank: int, n_iter: int,
+def get_linear_rec_svd_sklearn(input_matrix: np.ndarray, rank: int, n_iter: int,
                        random_state: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    reduced_matrix, svd = run_svd(input_matrix, rank, n_iter, random_state)
+    reduced_matrix, svd = run_svd_sklearn(input_matrix, rank, n_iter, random_state)
 
     reconstructed_matrix = svd.inverse_transform(reduced_matrix)
     return reconstructed_matrix, reduced_matrix, svd.components_
+
+def get_linear_rec_svd(input_matrix: torch.Tensor, rank: int, n_iter: int,
+                       random_state: int) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    # Set random seed for reproducibility
+    torch.manual_seed(random_state)
+    
+    # Perform truncated SVD
+    U, S, V = torch.svd_lowrank(input_matrix, q=rank, niter=n_iter)
+    
+    # Transform: project to reduced space
+    reduced_matrix = U @ torch.diag(S)
+    
+    # Inverse transform: reconstruct from reduced space
+    reconstructed_matrix = reduced_matrix @ V.T
+    
+    # Components (right singular vectors, transposed)
+    components = V.T
+    
+    return reconstructed_matrix, reduced_matrix, components
 
 
 def get_replacement_module(weight, module_name, type, reconstruct_config):
     cfg = reconstruct_config[type]
     if type == 'svd':
         reconstructed_matrix, enc, dec = get_linear_rec_svd(
-            input_matrix=weight.float().cpu().detach().numpy(), 
+            # input_matrix=weight.float().cpu().detach().numpy(), 
+            input_matrix=weight.float(), 
             rank=cfg['rank'], 
             n_iter=cfg['n_iter'], 
             random_state=cfg['random_state']
@@ -356,15 +378,14 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                     replace_module_weights(target.lora_B.default, replacement_decoder_weight.T)
                     assert r_squared == True, "r_squared should be set"
                     target.forward = types.MethodType(lora_forward_latent, target)
-                    # target.get_delta_weight = types.MethodType(lora_get_delta_weight, target)
                     target.get_delta_weight = types.MethodType(lora_get_delta_weight_faster_chatgpt, target)
                     replace_module_weights(target.lora_A.default, replacement_encoder_weight.T)
 
                     if learn_diagonal_only:
-                        target.default_lora_latent_mapping = DiagonalLinear(lora_config.r)
+                        target.default_lora_latent_mapping = RandomLinear(lora_config.r, reconstruct_config['r_trainable'])
                     else:
                         target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
-                    init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
+                        init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
                     target.default_lora_latent_mapping.to(target.lora_A.default.weight.device)
 
                     all_linear_names.append(key)
@@ -422,7 +443,6 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
         print(f"[lora_xs.find_and_initialize] Checksum - number of unique weight matrices: {num_unique_matrices}, dtype: {dtype}, device: {device}")
         print(f"[lora_xs.find_and_initialize] Checksum - number of unique weight matrices: {num_unique_matrices}")
 
-    # import pdb; pdb.set_trace()
     if num_lora_xs_modules == 0:
         raise ValueError(
             f"Target modules {lora_config.target_modules} not found in the base model. "

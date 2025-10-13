@@ -460,6 +460,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                         "tie_linear_num": self.config.model.lora_xs_tie_linear_num,
                         "tie_linear_mode": self.config.model.lora_xs_tie_linear_mode,
                         "learn_diagonal_only": self.config.model.lora_xs_learn_diagonal_only,
+                        "r_trainable": self.config.model.lora_rank_trainable,
                     }
                     reconstruction_config["svd"]['rank'] = self.config.model.lora_rank
                     print("*************** Using LoRA-XS ***************")
@@ -746,10 +747,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                         continue
                     name_clean = name.replace("_fsdp_wrapped_module.", "").replace(".base_layer", "")
                     lora_params[name_clean] = param.detach().clone()
-                    params = convert_weight_keys(
-                        lora_params, 
-                        getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
-                    )
+                params = convert_weight_keys(
+                    lora_params, 
+                    getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)
+                )
             else:
                 print("[rollout_mode] no merge_adapter")
                 params = self.actor_module_fsdp.state_dict()
@@ -1408,6 +1409,7 @@ class CriticWorker(Worker, DistProfilerExtension):
                 "tie_linear_num": self.config.model.lora_xs_tie_linear_num,
                 "tie_linear_mode": self.config.model.lora_xs_tie_linear_mode,
                 "learn_diagonal_only": self.config.model.lora_xs_learn_diagonal_only,
+                "r_trainable": self.config.model.lora_rank_trainable,
             }
             reconstruction_config["svd"]['rank'] = self.config.model.lora_r
             print("*************** Using LoRA-XS ***************")
