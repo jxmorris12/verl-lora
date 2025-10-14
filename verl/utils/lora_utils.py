@@ -220,19 +220,21 @@ def lora_forward_latent(self, x: torch.Tensor):
 
         # adding latent_mapping in the forward loop
         x = self.lora_dropout[self.active_adapter[0]](x)
-        x = self.lora_A[self.active_adapter[0]](x)
+        # x = self.lora_A[self.active_adapter[0]](x)
+        x_lora = F.linear(x_lora, self.lora_A[self.active_adapter[0]].weight, self.lora_A[self.active_adapter[0]].bias)
         
         # Handle both 1D and 2D latent mapping
         latent_weight = self.default_lora_latent_mapping.weight.to(x.dtype).contiguous()
-        if latent_weight.dim() == 2:
-            x = F.linear(x, latent_weight)
-        elif latent_weight.dim() == 1:
+        if hasattr(self.default_lora_latent_mapping, "effective_weight"):
             x = F.linear(x, self.default_lora_latent_mapping.effective_weight)
+        elif latent_weight.dim() in [1, 2]:
+            x = F.linear(x, latent_weight)
         else:
             raise ValueError(f"Expected 1D or 2D latent mapping, got {latent_weight.dim()}D")
         
         result += (
-            self.lora_B[self.active_adapter[0]](x)
+            # self.lora_B[self.active_adapter[0]](x)
+            F.linear(x_lora, self.lora_B[self.active_adapter[0]].weight, self.lora_B[self.active_adapter[0]].bias)
             * self.scaling[self.active_adapter[0]]
         )
     else:
@@ -390,6 +392,7 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                         kaiming_uniform_init(replacement_decoder_weight)
                     replace_module_weights(target.lora_B.default, replacement_decoder_weight.T)
                     assert r_squared == True, "r_squared should be set"
+                    # print("setting lora_forward_latent on type", type(target))
                     target.forward = types.MethodType(lora_forward_latent, target)
                     target.get_delta_weight = types.MethodType(lora_get_delta_weight_faster_chatgpt, target)
                     replace_module_weights(target.lora_A.default, replacement_encoder_weight.T)
