@@ -25,12 +25,15 @@ class RandomLinear(torch.nn.Module):
     def __init__(self, r, r_trainable):
         super().__init__()
         self.weight = torch.nn.Parameter(torch.randn(r_trainable))
-        self.random_weight = torch.nn.Parameter(torch.randn(r_trainable, r), requires_grad=False)
+        self.random_weight = torch.nn.Parameter(torch.randn(r_trainable, r, r), requires_grad=False)
         self.r_trainable = r_trainable
     
+    @property
+    def effective_weight(self) -> torch.Tensor:
+        return torch.einsum("b,bij->ij", self.weight, self.random_weight) / math.sqrt(self.r_trainable)
+    
     def forward(self, x):
-        weight = self.weight @ self.random_weight / torch.sqrt(self.r_trainable)
-        return x @ weight.T
+        return x @ self.effective_weight
 
 def transpose(weight, fan_in_fan_out):
     return weight.T if fan_in_fan_out else weight
@@ -111,7 +114,13 @@ def lora_get_delta_weight_faster_chatgpt(self, adapter) -> torch.Tensor:
         cache["buf_mr"] = buf_mr
 
     # --- mapping tensor in place (no module casting) ---
-    M = self.default_lora_latent_mapping.weight.to(device=device, dtype=work_dtype, copy=False).contiguous()
+    # Handle RandomLinear case
+    if hasattr(self.default_lora_latent_mapping, 'random_weight'):
+        # Compute the effective diagonal weight for RandomLinear
+        M = self.default_lora_latent_mapping.effective_weight.to(device=device, dtype=work_dtype, copy=False).contiguous()
+    else:
+        M = self.default_lora_latent_mapping.weight.to(device=device, dtype=work_dtype, copy=False).contiguous()
+    
     if M.dim() != 2 or M.shape != (r, r):
         raise ValueError(f"default_lora_latent_mapping must be square (r×r); got {tuple(M.shape)}")
 
@@ -135,8 +144,6 @@ def lora_get_delta_weight_faster_chatgpt(self, adapter) -> torch.Tensor:
 
         # return a copy so future calls don't mutate our reused buffers
         return res.clone()
-
-
 
 
 def lora_get_delta_weight(self, adapter) -> torch.Tensor:
@@ -165,7 +172,16 @@ def lora_get_delta_weight(self, adapter) -> torch.Tensor:
         weight_B = weight_B.float()
     
     default_lora_latent_mapping = self.default_lora_latent_mapping.to(weight_A.dtype)
-    if default_lora_latent_mapping.weight.dim() == 2:
+    
+    # Handle RandomLinear case
+    if hasattr(default_lora_latent_mapping, 'random_weight'):
+        # Compute the effective diagonal weight for RandomLinear
+        effective_weight = default_lora_latent_mapping.effective_weight
+        output_tensor = transpose(
+            weight_B @ effective_weight @ weight_A,
+            self.fan_in_fan_out
+        ) * self.scaling[adapter]
+    elif default_lora_latent_mapping.weight.dim() == 2:
         output_tensor = transpose(
             weight_B @ default_lora_latent_mapping.weight @ weight_A,
             self.fan_in_fan_out
@@ -211,7 +227,7 @@ def lora_forward_latent(self, x: torch.Tensor):
         if latent_weight.dim() == 2:
             x = F.linear(x, latent_weight)
         elif latent_weight.dim() == 1:
-            x = self.default_lora_latent_mapping(x)
+            x = F.linear(x, self.default_lora_latent_mapping.effective_weight)
         else:
             raise ValueError(f"Expected 1D or 2D latent mapping, got {latent_weight.dim()}D")
         
@@ -363,9 +379,6 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                     reconstruct_config=reconstruct_config
                 )
 
-                # print('[a] replacement_weight shape and dtype', replacement_encoder_weight.shape, replacement_encoder_weight.dtype)
-                # print('[b] replacement_weight shape and dtype', replacement_decoder_weight.shape, replacement_decoder_weight.dtype)
-                
                 if not isinstance(target, peft.tuners.lora.Linear):
                     raise NotImplementedError('Only initialization for peft.tuners.lora.Linear type is implemented.')
                     # TODO implement for Linear8bitLt
@@ -383,6 +396,8 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
 
                     if learn_diagonal_only:
                         target.default_lora_latent_mapping = RandomLinear(lora_config.r, reconstruct_config['r_trainable'])
+                        # init_module_weights(target.default_lora_latent_mapping.weight, sigma=0.00001)
+                        torch.nn.init.normal_(target.default_lora_latent_mapping.weight, mean=0, std=0.00001)
                     else:
                         target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
                         init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
