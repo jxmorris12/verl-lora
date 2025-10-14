@@ -594,8 +594,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         self._module_metrics = metrics
 
         ##### Test
-        with actor_module_fsdp.disable_adapter():
-            print("[test] disable_adapter")
+        if hasattr(actor_module_fsdp, "disable_adapter"):
+            with actor_module_fsdp.disable_adapter():
+                print("[test] disable_adapter")
         new_n_trainable = sum(p.numel() for p in actor_module_fsdp.parameters() if p.requires_grad)
         print("[test] n_trainable:", n_trainable, "new_n_trainable:", new_n_trainable)
         assert n_trainable == new_n_trainable, f"num_trainable_params should be the same, got {new_n_trainable} instead of {n_trainable}"
@@ -746,7 +747,7 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     if any(x in name for x in ["_flat_param", "lora_"]):
                         continue
                     name_clean = name.replace("_fsdp_wrapped_module.", "").replace(".base_layer", "")
-                    lora_params[name_clean] = param.detach().clone()
+                    lora_params[name_clean] = param.detach().cpu()
                 params = convert_weight_keys(
                     lora_params, 
                     getattr(self.actor_module_fsdp, "_fsdp_wrapped_module", self.actor_module_fsdp)

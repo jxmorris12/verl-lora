@@ -127,8 +127,8 @@ class MedianDatasetVerl(torch.utils.data.Dataset):
         )
         
         # Create the instruction
-        prompt = f"Given the following data, consisting of {self.list_length} numbers, you will be asked to compute the median. Data: {sample_data['values']}. What is the median of these numbers? Feel free to think step-by-step. After reasoning, please respond with the median only (a single number)."
-        instruction_following = 'Let\'s think step by step and output the final answer after "####".'
+        prompt = f"Given the following data, consisting of {self.list_length} numbers, you will be asked to compute the median. Data: {sample_data['values']}. What is the median of these numbers?"
+        instruction_following = 'Let\'s think step by step and output the median, a single number after "####".'
         
         answer = str(sample_data['median'])
 
