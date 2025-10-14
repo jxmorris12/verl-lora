@@ -395,6 +395,7 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                     replace_module_weights(target.lora_A.default, replacement_encoder_weight.T)
 
                     if learn_diagonal_only:
+                        assert reconstruct_config['r_trainable'] is not None, "r_trainable should be set for learn_diagonal_only"
                         target.default_lora_latent_mapping = RandomLinear(lora_config.r, reconstruct_config['r_trainable'])
                         # init_module_weights(target.default_lora_latent_mapping.weight, sigma=0.00001)
                         torch.nn.init.normal_(target.default_lora_latent_mapping.weight, mean=0, std=0.00001)
