@@ -404,6 +404,8 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                     else:
                         target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
                         init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
+                    # Mark this module to prevent FSDP wrapping which can cause bias issues
+                    target.default_lora_latent_mapping._is_lora_latent_mapping = True
                     target.default_lora_latent_mapping.to(target.lora_A.default.weight.device)
 
                     all_linear_names.append(key)
