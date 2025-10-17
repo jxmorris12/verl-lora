@@ -129,7 +129,8 @@ def create_device_mesh(world_size, fsdp_size):
 
 def get_sharding_strategy(device_mesh):
     from torch.distributed.fsdp import ShardingStrategy
-
+    # return ShardingStrategy.NO_SHARD # added by jxm 
+    
     if device_mesh.ndim == 1:
         sharding_strategy = ShardingStrategy.FULL_SHARD
     elif device_mesh.ndim == 2:
@@ -1077,8 +1078,11 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
-        if self.world_size > 1 and fsdp_version(self.actor.actor_module) == 1:
-            self.actor.actor_module._handle.reshard(True)
+        # if self.world_size > 1 and fsdp_version(self.actor.actor_module) == 1:
+        #     self.actor.actor_module._handle.reshard(True)
+        # if self.world_size > 1:
+        #     self.actor.actor_module.reshard()
+        #     self.actor.actor_module._handle.reshard(True)
 
         if self._is_offload_param:
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)
@@ -1174,7 +1178,6 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def load_checkpoint(self, local_path, hdfs_path=None, del_local_after_load=False):
         print("*** SUPPOSED TO LOAD CHECKPOINT FROM ***", local_path)
-        return
         assert self._is_actor or (not self._is_actor and self._is_rollout), (
             f"Checkpoint loading is only supported for Actor or standalone Rollout Workers, but got "
             f"{self._is_actor} and {self._is_rollout}"

@@ -51,6 +51,7 @@ def get_sharding_strategy(device_mesh):
         NotImplementedError: If the number of dimensions of the device mesh is neither 1 nor 2.
     """
     from torch.distributed.fsdp import ShardingStrategy
+    # return ShardingStrategy.NO_SHARD # added by jxm 
 
     if device_mesh.ndim == 1:
         sharding_strategy = ShardingStrategy.FULL_SHARD
