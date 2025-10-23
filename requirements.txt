@@ -25,4 +25,5 @@ latex2sympy2_extended
 math_verify
 tensorboard
 scikit-learn
-modelscope
+modelscope 
+pebble

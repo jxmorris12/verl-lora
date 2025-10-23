@@ -19,7 +19,6 @@ export NCCL_DEBUG=warn
 set -x
 
 export WANDB_OFFICIAL=1
-export WANDB_API_KEY=TO_BE_FILLED
 TOTAL_NODES=${ARNOLD_WORKER_NUM:-1}  # Default to 1 if not set
 CURRENT_NODE=${ARNOLD_ID:-0}  # Default to 0 if not set
 
@@ -107,12 +106,12 @@ fi
 
 eval_script_path="sh/eval.sh"
 
-HDFS_HOME=TO_BE_FILLED
+HDFS_HOME="/workspace"
 
 base_checkpoint_path="${HDFS_HOME}/checkpoints/${RUN_NAME}"
 
 
-init_model_path="${HDFS_HOME}/base_models/${INIT_MODEL_PATH}"
+init_model_path="/root/pretrained-llms/${INIT_MODEL_PATH}"
 chmod +x sh/convert_and_evaluate_gpu_nodes.sh
 
 
@@ -230,7 +229,6 @@ python sh/collect_results.py \
     --base_dir "$base_checkpoint_path/$output_dir" \
     --model_name $init_model_path \
     --wandb_project "verl_math_evaluate" \
-    --wandb_api_key "${WANDB_API_KEY}" \
     --wandb_run_name $RUN_NAME \
     --temperature $temperature \
     --benchmarks $benchmarks \
