@@ -2,6 +2,8 @@
 
 # example usage: bash eval_math.sh --run_name verl-grpo-fix-math-eval-large-reward_temp1.0_ppomicro4_Qwen2.5-14B_simplelr_math_35 --init_model Qwen2.5-14B --template qwen25-math-cot  --tp_size 1
 
+export VLLM_ATTENTION_BACKEND=FLASH_ATTN
+
 cd examples/simplelr_math_eval
 pip uninstall latex2sympy2 -y
 cd latex2sympy
