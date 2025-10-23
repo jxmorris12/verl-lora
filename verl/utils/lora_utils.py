@@ -227,7 +227,7 @@ def lora_forward_latent(self, x: torch.Tensor):
         latent_mapping = self.default_lora_latent_mapping
         from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
         with FSDP.summon_full_params(latent_mapping, writeback=False):
-            print("type(latent_mapping):", type(latent_mapping))
+            # print("type(latent_mapping):", type(latent_mapping))
             if hasattr(latent_mapping, 'effective_weight'):
                 latent_weight = latent_mapping.effective_weight.to(x.dtype).contiguous()
             else:
