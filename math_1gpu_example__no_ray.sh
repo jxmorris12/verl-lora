@@ -5,14 +5,14 @@ set -x
 export NCCL_DEBUG=DEBUG
 export RAY_BACKEND_LOG_LEVEL=debug
 export RAY_DEDUP_LOGS=1
+export RAY_DEBUG=0
 
 
 export WORKING_DIR=/workspace/verl-lora
 export PROJECT_NAME=verl_train
 export WANDB_OFFICIAL=1
-export VLLM_ATTENTION_BACKEND=XFORMERS
 export HDFS_DATA_PATH="/workspace/data/math"
-export HDFS_MODEL_PATH="/root/pretrained-llms"
+export HDFS_MODEL_PATH="/workspace/pretrained-llms"
 export HDFS_CHECKPOINT_PATH="/workspace/checkpoints"
 export HDFS_LOG_PATH="/root/math-logs/"
 export RUN_NAME=verl-grpo
@@ -23,9 +23,10 @@ export ARNOLD_WORKER_NUM=1 # number of nodes you want to use
 TRAIN_BATCH_SIZE=256
 VAL_BATCH_SIZE=500
 MAX_PROMPT_LENGTH=1024
-MAX_RESPONSE_LENGTH=3072
+# MAX_RESPONSE_LENGTH=3072
+MAX_RESPONSE_LENGTH=1024
 LEARNING_RATE=5e-7
-PPO_MINI_BATCH_SIZE=256
+PPO_MINI_BATCH_SIZE=64
 # per GPU
 PPO_MICRO_BATCH_SIZE=null
 CLIP_RATIO=0.2
@@ -38,12 +39,12 @@ ROLLOUT_N=8
 KL_COEF=0.001
 TOTAL_EPOCHS=12
 DATASET_NAME=simplelr_math_35
-ROLLOUT_GPU_MEMORY_UTIL=0.5
-MODEL_NAME=Qwen2.5-Math-1.5B
+ROLLOUT_GPU_MEMORY_UTIL=0.2
+MODEL_NAME=Qwen2.5-Math-7B
 SAVE_FREQ=1
 TEST_FREQ=5
 REMOVE_CLIP=False
-ROLLOUT_TENSOR_MODEL_PARALLEL_SIZE=2
+ROLLOUT_TENSOR_MODEL_PARALLEL_SIZE=1
 MICRO_ROLLOUT_BATCH_SIZE=1024
 REMOVE_PREVIOUS_CKPT=False
 
@@ -194,7 +195,7 @@ python -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.enable_chunked_prefill=False \
   actor_rollout_ref.rollout.max_num_batched_tokens=$max_num_batched_tokens \
   actor_rollout_ref.ref.log_prob_micro_batch_size=$LOG_PROB_MICRO_BATCH_SIZE \
-  actor_rollout_ref.ref.fsdp_config.param_offload=True \
+  actor_rollout_ref.ref.fsdp_config.param_offload=False \
   data.filter_overlong_prompts=True \
   algorithm.kl_ctrl.kl_coef=$KL_COEF \
   critic.ppo_micro_batch_size_per_gpu=4 \
@@ -203,7 +204,7 @@ python -m verl.trainer.main_ppo \
   trainer.project_name=$PROJECT_NAME \
   +trainer.remove_previous_ckpt_in_save=$REMOVE_PREVIOUS_CKPT \
   trainer.experiment_name=$RUN_NAME \
-  trainer.n_gpus_per_node=2 \
+  trainer.n_gpus_per_node=1 \
   trainer.nnodes=$ARNOLD_WORKER_NUM \
   +trainer.remove_clip=$REMOVE_CLIP \
   trainer.save_freq=$SAVE_FREQ \
@@ -212,8 +213,8 @@ python -m verl.trainer.main_ppo \
   trainer.total_epochs=$TOTAL_EPOCHS \
   actor_rollout_ref.model.use_remove_padding=True \
   actor_rollout_ref.actor.use_dynamic_bsz=True \
-  actor_rollout_ref.model.lora_rank=64 \
-  actor_rollout_ref.model.lora_xs_tie_linear_num=8 \
+  actor_rollout_ref.model.lora_rank=3 \
+  actor_rollout_ref.model.lora_xs_tie_linear_num=1 \
   actor_rollout_ref.model.lora_alpha=32 \
   actor_rollout_ref.model.use_lora_xs=True \
   actor_rollout_ref.actor.tis_imp_ratio_cap=2.0 \

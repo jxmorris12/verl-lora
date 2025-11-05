@@ -232,7 +232,7 @@ def lora_forward_latent(self, x: torch.Tensor):
                 latent_weight = latent_mapping.effective_weight.to(x.dtype).contiguous()
             else:
                 latent_weight = latent_mapping.weight.to(x.dtype).contiguous()
-            
+            x = F.linear(x, latent_weight, bias=None) 
             result += (
                 self.lora_B[self.active_adapter[0]](x)
                 * self.scaling[self.active_adapter[0]]
