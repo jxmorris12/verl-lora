@@ -33,3 +33,4 @@ word2number
 jieba
 timeout_decorator
 debugpy>=1.8.0
+scikit-learn
