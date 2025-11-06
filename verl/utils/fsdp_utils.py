@@ -107,11 +107,6 @@ def get_fsdp_wrap_policy(module, config=None, is_lora=False):
     if is_lora:
 
         def lambda_policy_fn(module):
-            # Skip LoRA-XS latent mapping modules to avoid FSDP bias issues
-            # The latent mapping modules are small (r x r) and don't need sharding
-            module_name = type(module).__name__
-            if module_name in ("RandomLinear",) or hasattr(module, "_is_lora_latent_mapping"):
-                return False
             return bool(
                 len(list(module.named_children())) == 0
                 and getattr(module, "weight", None) is not None

@@ -222,17 +222,9 @@ def lora_forward_latent(self, x: torch.Tensor):
         x = self.lora_dropout[self.active_adapter[0]](x)
         x = self.lora_A[self.active_adapter[0]](x)
         
-        # Handle both RandomLinear and regular Linear latent mapping
-        # Always use F.linear with explicit bias=None to avoid FSDP2 bias corruption
-        latent_mapping = self.default_lora_latent_mapping
-        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-        with FSDP.summon_full_params(latent_mapping, writeback=False):
-            # print("type(latent_mapping):", type(latent_mapping))
-            if hasattr(latent_mapping, 'effective_weight'):
-                latent_weight = latent_mapping.effective_weight.to(x.dtype).contiguous()
-            else:
-                latent_weight = latent_mapping.weight.to(x.dtype).contiguous()
-        x = F.linear(x, latent_weight, bias=None) 
+        # Call the module's forward method directly (FSDP-compatible)
+        x = self.default_lora_latent_mapping(x)
+        
         result += (
             self.lora_B[self.active_adapter[0]](x)
             * self.scaling[self.active_adapter[0]]
@@ -404,10 +396,6 @@ def find_and_initialize_lora_xs(model, lora_config, adapter_name, reconstr_type,
                     else:
                         target.default_lora_latent_mapping = LINEAR_MODULE(lora_config.r, lora_config.r, bias=False)
                         init_module_weights(target.default_lora_latent_mapping, sigma=0.00001)
-                        # Explicitly set bias to None to prevent FSDP from creating an empty bias tensor
-                        target.default_lora_latent_mapping.bias = None
-                    # Mark this module to prevent FSDP wrapping which can cause bias issues
-                    target.default_lora_latent_mapping._is_lora_latent_mapping = True
                     target.default_lora_latent_mapping.to(target.lora_A.default.weight.device)
 
                     all_linear_names.append(key)

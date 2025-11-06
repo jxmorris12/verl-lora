@@ -1078,11 +1078,15 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
 
         # https://pytorch.org/docs/stable/notes/fsdp.html#fsdp-notes
         # unshard the root FSDP module
-        # if self.world_size > 1 and fsdp_version(self.actor.actor_module) == 1:
-        #     self.actor.actor_module._handle.reshard(True)
-        # if self.world_size > 1:
-        #     self.actor.actor_module.reshard()
-        #     self.actor.actor_module._handle.reshard(True)
+        if self.world_size > 1 and fsdp_version(self.actor.actor_module) == 1:
+            self.actor.actor_module._handle.reshard(True)
+        if self.world_size > 1:
+            try:
+                self.actor.actor_module.reshard()
+                self.actor.actor_module._handle.reshard(True)
+            except AttributeError:
+                print("WARNING: Actor module is not a FSDP module, skipping resharding.")
+                pass
 
         if self._is_offload_param:
             offload_fsdp_model_to_cpu(self.actor_module_fsdp)
