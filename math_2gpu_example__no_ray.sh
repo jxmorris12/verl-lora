@@ -25,7 +25,8 @@ VAL_BATCH_SIZE=500
 MAX_PROMPT_LENGTH=1024
 MAX_RESPONSE_LENGTH=3072
 #MAX_RESPONSE_LENGTH=1024
-LEARNING_RATE=5e-7
+# LEARNING_RATE=5e-7
+LEARNING_RATE=2e-5
 PPO_MINI_BATCH_SIZE=256
 # per GPU
 PPO_MICRO_BATCH_SIZE=null
@@ -192,7 +193,7 @@ python -m verl.trainer.main_ppo \
   actor_rollout_ref.rollout.name=vllm \
   actor_rollout_ref.rollout.gpu_memory_utilization=$ROLLOUT_GPU_MEMORY_UTIL \
   actor_rollout_ref.rollout.n=$ROLLOUT_N \
-  actor_rollout_ref.rollout.enable_chunked_prefill=False \
+  actor_rollout_ref.rollout.enable_chunked_prefill=True \
   actor_rollout_ref.rollout.max_num_batched_tokens=$max_num_batched_tokens \
   actor_rollout_ref.ref.log_prob_micro_batch_size=$LOG_PROB_MICRO_BATCH_SIZE \
   actor_rollout_ref.ref.fsdp_config.param_offload=False \
@@ -216,8 +217,12 @@ python -m verl.trainer.main_ppo \
   actor_rollout_ref.model.lora_rank=32 \
   actor_rollout_ref.model.lora_xs_tie_linear_num=1 \
   actor_rollout_ref.model.lora_alpha=32 \
-  actor_rollout_ref.model.use_lora_xs=False \
+  actor_rollout_ref.model.use_lora_xs=True \
   actor_rollout_ref.actor.tis_imp_ratio_cap=2.0 \
   actor_rollout_ref.rollout.calculate_log_probs=True \
-  trainer.max_actor_ckpt_to_keep=1
-
+  trainer.max_actor_ckpt_to_keep=1 \
+  actor_rollout_ref.rollout.load_format=safetensors \
+  actor_rollout_ref.ref.strategy=fsdp2 \
+  trainer.val_before_train=False \
+  trainer.resume_mode="disable" \
+  actor_rollout_ref.model.use_shm=True
