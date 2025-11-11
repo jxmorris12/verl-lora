@@ -119,7 +119,8 @@ original_dir=$(pwd)
 
 # 主脚本部分修改
 # 获取需要评估的检查点
-readarray -t checkpoints_to_evaluate < <(get_checkpoints_to_evaluate "$base_checkpoint_path")
+# readarray -t checkpoints_to_evaluate < <(get_checkpoints_to_evaluate "$base_checkpoint_path")
+checkpoints_to_evaluate=("global_step_396")
 
 if [ ${#checkpoints_to_evaluate[@]} -eq 0 ]; then
     echo "No new checkpoints to evaluate." >&2
