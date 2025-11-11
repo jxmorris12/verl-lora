@@ -5,19 +5,20 @@
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 cd examples/simplelr_math_eval
-pip uninstall latex2sympy2 -y
-cd latex2sympy
-pip install -e . --use-pep517
-pip install Pebble
-pip install sympy==1.12
-pip install antlr4-python3-runtime==4.11.1
-pip install timeout-decorator
-pip install jieba
-cd ..
+# uv pip uninstall latex2sympy2
+# cd latex2sympy
+# uv pip install -e . --no-build-isolation
+uv pip install Pebble
+# uv pip install sympy==1.12
+uv pip install antlr4-python3-runtime==4.11.1
+uv pip install timeout-decorator
+uv pip install jieba
+uv pip install word2number
+uv pip install matplotlib
+# cd ..
 
 
 export NCCL_DEBUG=warn
-# 定义评估脚本路径
 set -x
 
 export WANDB_OFFICIAL=1
@@ -117,31 +118,31 @@ init_model_path="/root/pretrained-llms/${INIT_MODEL_PATH}"
 chmod +x sh/convert_and_evaluate_gpu_nodes.sh
 
 
-if [ "${add_step_0:-false}" = true ]; then
-    done_file="$base_checkpoint_path/global_step_0/actor/huggingface/.cp_done"
+# if [ "${add_step_0:-false}" = true ]; then
+#     done_file="$base_checkpoint_path/global_step_0/actor/huggingface/.cp_done"
     
-    if [ "$CURRENT_NODE" -eq 0 ]; then
-        # Node 0 handles the copying
-        if [ ! -f "$done_file" ]; then
-            mkdir -p "$base_checkpoint_path/global_step_0/actor/huggingface"
-            cp -r "$init_model_path"/* "$base_checkpoint_path/global_step_0/actor/huggingface/"
-            if [ $? -eq 0 ]; then
-                touch "$done_file"
-                echo "Copied initial model to $base_checkpoint_path/global_step_0/actor/huggingface/"
-            else
-                echo "Failed to copy initial model"
-                exit 1
-            fi
-        fi
-    else
-        # Other nodes wait for the .cp_done file
-        echo "Node $CURRENT_NODE waiting for step 0 files to be copied..."
-        while [ ! -f "$done_file" ]; do
-            sleep 5
-        done
-        echo "Node $CURRENT_NODE detected step 0 files are ready"
-    fi
-fi
+#     if [ "$CURRENT_NODE" -eq 0 ]; then
+#         # Node 0 handles the copying
+#         if [ ! -f "$done_file" ]; then
+#             mkdir -p "$base_checkpoint_path/global_step_0/actor/huggingface"
+#             cp -r "$init_model_path"/* "$base_checkpoint_path/global_step_0/actor/huggingface/"
+#             if [ $? -eq 0 ]; then
+#                 touch "$done_file"
+#                 echo "Copied initial model to $base_checkpoint_path/global_step_0/actor/huggingface/"
+#             else
+#                 echo "Failed to copy initial model"
+#                 exit 1
+#             fi
+#         fi
+#     else
+#         # Other nodes wait for the .cp_done file
+#         echo "Node $CURRENT_NODE waiting for step 0 files to be copied..."
+#         while [ ! -f "$done_file" ]; do
+#             sleep 5
+#         done
+#         echo "Node $CURRENT_NODE detected step 0 files are ready"
+#     fi
+# fi
 
 
 

@@ -104,7 +104,7 @@ process_checkpoint() {
         gpu_ids="${gpu_ids}$((start_gpu + i))"
     done
     
-    ckpt_path="$base_checkpoint_path/$step_tag/$actor_dir/huggingface"
+    ckpt_path="$base_checkpoint_path/$step_tag/$actor_dir/huggingface_merged"
     
     echo "Evaluating checkpoint $step_tag on GPUs $gpu_ids" >&2
     

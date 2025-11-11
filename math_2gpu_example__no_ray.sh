@@ -221,8 +221,13 @@ python -m verl.trainer.main_ppo \
   actor_rollout_ref.actor.tis_imp_ratio_cap=2.0 \
   actor_rollout_ref.rollout.calculate_log_probs=True \
   trainer.max_actor_ckpt_to_keep=1 \
-  actor_rollout_ref.rollout.load_format=safetensors \
-  actor_rollout_ref.ref.strategy=fsdp2 \
-  trainer.val_before_train=False \
+  trainer.val_before_train=True \
   trainer.resume_mode="disable" \
-  actor_rollout_ref.model.use_shm=True
+  actor_rollout_ref.model.use_shm=False \
+  actor_rollout_ref.ref.strategy=fsdp \
+  actor_rollout_ref.rollout.load_format=dummy
+
+# actor_rollout_ref.ref.strategy=fsdp2
+# actor_rollout_ref.rollout.load_format=safetensors
+# use_shm=True
+
