@@ -15,7 +15,7 @@ uv pip install timeout-decorator
 uv pip install jieba
 uv pip install word2number
 uv pip install matplotlib
-cd ..
+# cd ..
 
 
 export NCCL_DEBUG=warn
