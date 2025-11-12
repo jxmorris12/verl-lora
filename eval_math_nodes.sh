@@ -5,11 +5,11 @@
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 
 cd examples/simplelr_math_eval
-# uv pip uninstall latex2sympy2
-# cd latex2sympy
-# uv pip install -e . --no-build-isolation
+uv pip uninstall latex2sympy2
+cd latex2sympy
+uv pip install -e . --no-build-isolation
 uv pip install Pebble
-# uv pip install sympy==1.12
+uv pip install sympy==1.12
 uv pip install antlr4-python3-runtime==4.11.1
 uv pip install timeout-decorator
 uv pip install jieba
